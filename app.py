@@ -45,7 +45,7 @@ async def upload_csv(device_id: str, file: UploadFile):
     sb.table("predictions").insert({
         "device_id": device_id,
         "risk_percent": risk,
-        "top_microbes": json.dumps(top10),
+        "top_microbes": top10,
         "created_at": datetime.utcnow().isoformat(),
     }).execute()
 
