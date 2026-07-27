@@ -52,7 +52,7 @@ async def upload_csv(device_id: str, file: UploadFile):
     return HTMLResponse(f"""
     <html><body style="font-family:sans-serif;text-align:center;margin-top:60px">
     <h2>✅ File uploaded successfully</h2>
-    <p>Check your device screen for the result.</p>
+    <p>Check your gut analyzer.</p>
     </body></html>
     """)
 
