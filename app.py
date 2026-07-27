@@ -15,19 +15,12 @@ explainer = shap.TreeExplainer(model)
 
 app = FastAPI()
 
-UPLOAD_PAGE = """
-<html><body style="font-family:sans-serif;text-align:center;margin-top:40px">
-<h2>Upload your CSV sample</h2>
-<form action="/upload/{device_id}" method="post" enctype="multipart/form-data">
-  <input type="file" name="file" accept=".csv" required><br><br>
-  <button type="submit">Send</button>
-</form>
-</body></html>
-"""
+with open("upload_page.html") as f:
+    UPLOAD_PAGE = f.read()
 
 @app.get("/upload/{device_id}", response_class=HTMLResponse)
 def upload_form(device_id: str):
-    return UPLOAD_PAGE.format(device_id=device_id)
+    return UPLOAD_PAGE.replace("__DEVICE_ID__", device_id)
 
 @app.post("/upload/{device_id}")
 async def upload_csv(device_id: str, file: UploadFile):
@@ -49,12 +42,7 @@ async def upload_csv(device_id: str, file: UploadFile):
         "created_at": datetime.utcnow().isoformat(),
     }).execute()
 
-    return HTMLResponse(f"""
-    <html><body style="font-family:sans-serif;text-align:center;margin-top:60px">
-    <h2>✅ File uploaded successfully</h2>
-    <p>Check your gut analyzer.</p>
-    </body></html>
-    """)
+    return JSONResponse({"status": "ok"})
 
 @app.get("/latest/{device_id}")
 def latest(device_id: str):
