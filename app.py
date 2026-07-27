@@ -49,7 +49,12 @@ async def upload_csv(device_id: str, file: UploadFile):
         "created_at": datetime.utcnow().isoformat(),
     }).execute()
 
-    return JSONResponse({"risk_percent": risk, "top_microbes": top10})
+    return HTMLResponse(f"""
+    <html><body style="font-family:sans-serif;text-align:center;margin-top:60px">
+    <h2>✅ File uploaded successfully</h2>
+    <p>Check your device screen for the result.</p>
+    </body></html>
+    """)
 
 @app.get("/latest/{device_id}")
 def latest(device_id: str):
