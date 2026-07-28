@@ -1,4 +1,4 @@
-import os, io, json, shap, pandas as pd, xgboost as xgb
+import os, io, json, time, shap, pandas as pd, xgboost as xgb
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from supabase import create_client
@@ -18,13 +18,55 @@ app = FastAPI()
 with open("upload_page.html") as f:
     UPLOAD_PAGE = f.read()
 
+# ---- simple in-memory rate limiter: max 5 uploads per 5 min per device ----
+RATE_LIMIT_MAX = 5
+RATE_LIMIT_WINDOW_SEC = 300
+_upload_log = {}  # device_id -> list of timestamps
+
+def check_rate_limit(device_id: str):
+    now = time.time()
+    log = _upload_log.setdefault(device_id, [])
+    log[:] = [t for t in log if now - t < RATE_LIMIT_WINDOW_SEC]
+    if len(log) >= RATE_LIMIT_MAX:
+        return False
+    log.append(now)
+    return True
+
 @app.get("/upload/{device_id}", response_class=HTMLResponse)
 def upload_form(device_id: str):
     return UPLOAD_PAGE.replace("__DEVICE_ID__", device_id)
 
 @app.post("/upload/{device_id}")
 async def upload_csv(device_id: str, file: UploadFile):
-    df = pd.read_csv(io.BytesIO(await file.read()))
+    if not check_rate_limit(device_id):
+        return JSONResponse(status_code=429, content={
+            "error": "Too many uploads. Please wait a few minutes and try again."
+        })
+
+    if not file.filename.lower().endswith(".csv"):
+        return JSONResponse(status_code=400, content={
+            "error": "Please upload a .csv file."
+        })
+
+    try:
+        df = pd.read_csv(io.BytesIO(await file.read()))
+    except Exception:
+        return JSONResponse(status_code=400, content={
+            "error": "That file couldn't be read. Please check it's a valid CSV."
+        })
+
+    if df.empty:
+        return JSONResponse(status_code=400, content={
+            "error": "The CSV file is empty."
+        })
+
+    missing = [c for c in FEATURES if c not in df.columns]
+    if missing:
+        return JSONResponse(status_code=400, content={
+            "error": f"CSV is missing {len(missing)} required column(s). "
+                     f"Please use the correct sample template."
+        })
+
     df = df[FEATURES]          # reorder/select columns to match model exactly
     X = df.values
 
@@ -52,6 +94,13 @@ def latest(device_id: str):
     if not r.data:
         return {"status": "empty"}
     return {"status": "ok", **r.data[0]}
+
+@app.get("/history/{device_id}")
+def history(device_id: str, limit: int = 3):
+    r = (sb.table("predictions").select("risk_percent,created_at")
+         .eq("device_id", device_id)
+         .order("created_at", desc=True).limit(limit).execute())
+    return {"status": "ok", "history": r.data}
 
 @app.get("/health")
 def health():
