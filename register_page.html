@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Register Your Gut Health Analyzer</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #F7FBF8;
+    color: #1B2E1D;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+    padding: 20px;
+  }
+  .card {
+    background: #fff;
+    border: 1px solid #66BB6A;
+    border-radius: 16px;
+    padding: 32px;
+    max-width: 400px;
+    width: 100%;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  }
+  h1 { font-size: 22px; margin-bottom: 8px; color: #2E7D32; }
+  p.sub { color: #5B6E5D; font-size: 14px; margin-bottom: 24px; }
+  input[type=email] {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid #66BB6A;
+    border-radius: 8px;
+    font-size: 15px;
+    box-sizing: border-box;
+    margin-bottom: 16px;
+  }
+  button {
+    width: 100%;
+    padding: 12px;
+    background: #2E7D32;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { background: #43A047; }
+  #msg { margin-top: 16px; font-size: 14px; display: none; padding: 10px; border-radius: 8px; }
+  #msg.ok { background: #E8F5E9; color: #2E7D32; display: block; }
+  #msg.err { background: #FDECEA; color: #D32F2F; display: block; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Register Your Device</h1>
+    <p class="sub">Enter the email you'd like to use with your Gut Health Analyzer. When you power on your device for the first time, enter this same email to activate it — no need to enter any device ID.</p>
+    <form id="regForm">
+      <input type="email" id="email" placeholder="you@example.com" required>
+      <button type="submit">Register</button>
+    </form>
+    <div id="msg"></div>
+  </div>
+
+  <script>
+    document.getElementById('regForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const email = document.getElementById('email').value.trim();
+      const msg = document.getElementById('msg');
+      msg.className = ''; msg.style.display = 'none';
+
+      try {
+        const formData = new FormData();
+        formData.append('email', email);
+        const res = await fetch('/register', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || "Something went wrong.";
+          msg.className = 'err';
+        } else {
+          msg.textContent = "Registered! Power on your device and enter this same email to activate it.";
+          msg.className = 'ok';
+          document.getElementById('regForm').reset();
+        }
+      } catch (err) {
+        msg.textContent = "Network error. Please try again.";
+        msg.className = 'err';
+      }
+    });
+  </script>
+</body>
+</html>
