@@ -1,5 +1,4 @@
-import os, io, json, time, random, smtplib, shap, pandas as pd, xgboost as xgb
-from email.mime.text import MIMEText
+import os, io, json, time, random, requests, shap, pandas as pd, xgboost as xgb
 from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -8,20 +7,16 @@ from supabase import create_client
 # ============================================================
 # ENV VARS you must set on Render (Dashboard -> your service -> Environment):
 #   SUPABASE_URL, SUPABASE_SERVICE_KEY   (already set from before)
-#   SMTP_USER   = your gmail address, e.g. gutdevice@gmail.com
-#   SMTP_PASS   = Gmail "App Password" (NOT your normal gmail password)
-#                 Create at: Google Account -> Security -> 2-Step Verification
-#                 -> App Passwords -> generate one for "Mail"
+#   RESEND_API_KEY   = your Resend API key (from resend.com, free tier)
+#                      Render blocks outbound SMTP on the free tier, so we
+#                      send email via Resend's HTTPS API instead of SMTP.
 # ============================================================
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-SMTP_USER = os.environ["SMTP_USER"]
-SMTP_PASS = os.environ["SMTP_PASS"]
+RESEND_API_KEY = os.environ["RESEND_API_KEY"]
 
 model = xgb.XGBClassifier()
 model.load_model("model.json")
@@ -48,14 +43,18 @@ def check_rate_limit(device_id: str):
     return True
 
 def send_otp_email(to_email: str, otp: str):
-    msg = MIMEText(f"Your Gut Health Analyzer verification code is: {otp}\n\nThis code expires in 5 minutes.")
-    msg["Subject"] = "Your Gut Health Analyzer OTP"
-    msg["From"] = SMTP_USER
-    msg["To"] = to_email
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
+    resp = requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+        json={
+            "from": "Gut Health Analyzer <onboarding@resend.dev>",
+            "to": [to_email],
+            "subject": "Your Gut Health Analyzer OTP",
+            "text": f"Your Gut Health Analyzer verification code is: {otp}\n\nThis code expires in 5 minutes.",
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
 
 # ============================================================
 # Registration website (customer only enters EMAIL, nothing else)
@@ -134,9 +133,8 @@ async def verify_otp(device_id: str = Form(...), otp: str = Form(...)):
     return {"status": "ok"}
 
 # ============================================================
-# Prediction pipeline -- now triggered by the DEVICE after it reads a
-# CSV over USB (device POSTs the file bytes here, same model/SHAP logic
-# as before -- only the source of the file changed from web upload to USB).
+# Prediction pipeline -- triggered by the DEVICE after it reads a
+# CSV over USB (device POSTs the file bytes here).
 # ============================================================
 @app.post("/predict/{device_id}")
 async def predict(device_id: str, file: UploadFile):
