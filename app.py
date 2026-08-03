@@ -1,6 +1,5 @@
-import os, io, json, time, random, requests, smtplib, shap, pandas as pd, xgboost as xgb
+import os, io, json, time, random, requests, shap, pandas as pd, xgboost as xgb
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from supabase import create_client
