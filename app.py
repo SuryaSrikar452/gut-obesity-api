@@ -1,10 +1,10 @@
-import os, io, json, time, random, requests, shap, pandas as pd, xgboost as xgb
+import os, io, json, time, random, requests, smtplib, shap, pandas as pd, xgboost as xgb
 from datetime import datetime, timedelta
+from email.mime.text import MIMEText
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from supabase import create_client
-import smtplib
-from email.mime.text import MIMEText
+
 
 # ============================================================
 # ENV VARS you must set on Render (Dashboard -> your service -> Environment):
@@ -18,7 +18,7 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-RESEND_API_KEY = os.environ["RESEND_API_KEY"]
+
 
 model = xgb.XGBClassifier()
 model.load_model("model.json")
