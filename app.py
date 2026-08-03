@@ -39,38 +39,27 @@ def check_rate_limit(device_id: str):
     log.append(now)
     return True
 
-SMTP_HOST = "smtp.gmail.com"
-SMTP_USER = os.environ["SMTP_USER"]
-SMTP_PASS = os.environ["SMTP_PASS"]
+BREVO_API_KEY = os.environ["BREVO_API_KEY"]
+SENDER_EMAIL = "guthealdevice@gmail.com"  # must match the verified sender in Brevo
 
 def send_otp_email(to_email: str, otp: str):
-    msg = MIMEText(f"Your Gut Health Analyzer verification code is: {otp}\n\nThis code expires in 5 minutes.")
-    msg["Subject"] = "Your Gut Health Analyzer OTP"
-    msg["From"] = SMTP_USER
-    msg["To"] = to_email
-
-    # Try port 465 (SSL) first
-    try:
-        with smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=8) as server:
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, to_email, msg.as_string())
-        print(f"[SMTP] Sent via port 465 to {to_email}")
-        return
-    except Exception as e:
-        print(f"[SMTP 465 ERROR] {type(e).__name__}: {e}")
-
-    # Fall back to port 587 (STARTTLS)
-    try:
-        with smtplib.SMTP(SMTP_HOST, 587, timeout=8) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, to_email, msg.as_string())
-        print(f"[SMTP] Sent via port 587 to {to_email}")
-        return
-    except Exception as e:
-        print(f"[SMTP 587 ERROR] {type(e).__name__}: {e}")
-        raise
-
+    resp = requests.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={
+            "api-key": BREVO_API_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "sender": {"email": SENDER_EMAIL, "name": "Gut Health Analyzer"},
+            "to": [{"email": to_email}],
+            "subject": "Your Gut Health Analyzer OTP",
+            "textContent": f"Your Gut Health Analyzer verification code is: {otp}\n\nThis code expires in 5 minutes.",
+        },
+        timeout=10,
+    )
+    if resp.status_code >= 400:
+        print(f"[Brevo ERROR] status={resp.status_code} body={resp.text}")
+    resp.raise_for_status()
 # ============================================================
 # Registration website (customer only enters EMAIL, nothing else)
 # ============================================================
