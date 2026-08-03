@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from supabase import create_client
+import smtplib
+from email.mime.text import MIMEText
 
 # ============================================================
 # ENV VARS you must set on Render (Dashboard -> your service -> Environment):
@@ -42,19 +44,20 @@ def check_rate_limit(device_id: str):
     log.append(now)
     return True
 
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USER = os.environ["SMTP_USER"]
+SMTP_PASS = os.environ["SMTP_PASS"]
+
 def send_otp_email(to_email: str, otp: str):
-    resp = requests.post(
-        "https://api.resend.com/emails",
-        headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
-        json={
-            "from": "Gut Health Analyzer <onboarding@resend.dev>",
-            "to": [to_email],
-            "subject": "Your Gut Health Analyzer OTP",
-            "text": f"Your Gut Health Analyzer verification code is: {otp}\n\nThis code expires in 5 minutes.",
-        },
-        timeout=10,
-    )
-    resp.raise_for_status()
+    msg = MIMEText(f"Your Gut Health Analyzer verification code is: {otp}\n\nThis code expires in 5 minutes.")
+    msg["Subject"] = "Your Gut Health Analyzer OTP"
+    msg["From"] = SMTP_USER
+    msg["To"] = to_email
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_USER, to_email, msg.as_string())
 
 # ============================================================
 # Registration website (customer only enters EMAIL, nothing else)
