@@ -1,5 +1,5 @@
 import os, io, json, time, random, requests, shap, pandas as pd, xgboost as xgb
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from supabase import create_client
@@ -7,7 +7,7 @@ from supabase import create_client
 # ============================================================
 # ENV VARS you must set on Render (Dashboard -> your service -> Environment):
 #   SUPABASE_URL, SUPABASE_SERVICE_KEY   (already set from before)
-#   SMTP_USER, SMTP_PASS                 (Gmail address + App Password)
+#   BREVO_API_KEY                        (from Brevo -> SMTP & API -> API keys & MCP)
 # ============================================================
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -52,13 +52,14 @@ def send_otp_email(to_email: str, otp: str):
             "sender": {"email": SENDER_EMAIL, "name": "Gut Health Analyzer"},
             "to": [{"email": to_email}],
             "subject": "Your Gut Health Analyzer OTP",
-            "textContent": f"Your Gut Health Analyzer verification code is: {otp}\n\nThis code expires in 5 minutes.",
+            "textContent": f"Your Gut Health Analyzer verification code is: {otp}\n\nThis code expires in 15 minutes.",
         },
         timeout=10,
     )
     if resp.status_code >= 400:
         print(f"[Brevo ERROR] status={resp.status_code} body={resp.text}")
     resp.raise_for_status()
+
 # ============================================================
 # Registration website (customer only enters EMAIL, nothing else)
 # ============================================================
@@ -110,7 +111,7 @@ async def request_otp(device_id: str = Form(...), email: str = Form(...)):
         return JSONResponse(status_code=403, content={"error": "Email/device do not match our records."})
 
     otp = str(random.randint(100000, 999999))
-    expires = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
     sb.table("users").update({"otp_code": otp, "otp_expires_at": expires}).eq("email", email).execute()
 
     try:
@@ -129,7 +130,7 @@ async def verify_otp(device_id: str = Form(...), otp: str = Form(...)):
     row = r.data[0]
     if not row["otp_code"] or row["otp_code"] != otp:
         return JSONResponse(status_code=403, content={"error": "Incorrect OTP."})
-    if datetime.fromisoformat(row["otp_expires_at"]) < datetime.utcnow():
+    if datetime.fromisoformat(row["otp_expires_at"]) < datetime.now(timezone.utc):
         return JSONResponse(status_code=403, content={"error": "OTP expired. Request a new one."})
 
     sb.table("users").update({"otp_code": None, "otp_expires_at": None}).eq("device_id", device_id).execute()
@@ -172,7 +173,7 @@ async def predict(device_id: str, file: UploadFile):
         "device_id": device_id,
         "risk_percent": risk,
         "top_microbes": top10,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
 
     return {"status": "ok", "risk_percent": risk, "top_microbes": top10}
