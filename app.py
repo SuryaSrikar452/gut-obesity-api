@@ -1,13 +1,13 @@
-import os, io, json, time, random, requests, shap, pandas as pd, xgboost as xgb
+import os, io, time, random, secrets, hashlib, requests, shap, pandas as pd, xgboost as xgb
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, UploadFile, Form
+from fastapi import FastAPI, UploadFile, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from supabase import create_client
 
 # ============================================================
 # ENV VARS you must set on Render (Dashboard -> your service -> Environment):
 #   SUPABASE_URL, SUPABASE_SERVICE_KEY   (already set from before)
-#   BREVO_API_KEY                        (from Brevo -> SMTP & API -> API keys & MCP)
+#   BREVO_API_KEY                        (already set from before)
 # ============================================================
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -27,6 +27,11 @@ with open("register_page.html") as f:
 with open("upload_page.html") as f:
     UPLOAD_PAGE = f.read()
 
+SESSION_EXPIRED_PAGE = """<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session expired</title></head><body style="font-family:sans-serif;text-align:center;padding:60px 20px;">
+<h2>QR expired or invalid</h2><p>Please generate a new QR code on the device and scan again.</p>
+</body></html>"""
+
 # ---- rate limiter (unchanged from before) ----
 RATE_LIMIT_MAX = 5
 RATE_LIMIT_WINDOW_SEC = 300
@@ -42,15 +47,12 @@ def check_rate_limit(device_id: str):
     return True
 
 BREVO_API_KEY = os.environ["BREVO_API_KEY"]
-SENDER_EMAIL = "guthealdevice@gmail.com"  # must match the verified sender in Brevo
+SENDER_EMAIL = "guthealdevice@gmail.com"
 
 def send_otp_email(to_email: str, otp: str):
     resp = requests.post(
         "https://api.brevo.com/v3/smtp/email",
-        headers={
-            "api-key": BREVO_API_KEY,
-            "Content-Type": "application/json",
-        },
+        headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json"},
         json={
             "sender": {"email": SENDER_EMAIL, "name": "Gut Health Analyzer"},
             "to": [{"email": to_email}],
@@ -64,7 +66,7 @@ def send_otp_email(to_email: str, otp: str):
     resp.raise_for_status()
 
 # ============================================================
-# Registration website (customer only enters EMAIL, nothing else)
+# Registration website -- UNCHANGED
 # ============================================================
 @app.get("/register", response_class=HTMLResponse)
 def register_page():
@@ -75,15 +77,12 @@ async def register(email: str = Form(...)):
     email = email.strip().lower()
     existing = sb.table("users").select("*").eq("email", email).execute()
     if existing.data:
-        return JSONResponse(status_code=400, content={
-            "error": "This email is already registered."
-        })
+        return JSONResponse(status_code=400, content={"error": "This email is already registered."})
     sb.table("users").insert({"email": email}).execute()
     return {"status": "ok", "message": "Registered. Power on your device and enter this email to activate it."}
 
 # ============================================================
-# Device: one-time claim (binds this specific device_id to the email
-# the customer typed, only works if that email has no device bound yet)
+# Device claim / OTP login -- UNCHANGED
 # ============================================================
 @app.post("/claim-device")
 async def claim_device(device_id: str = Form(...), email: str = Form(...)):
@@ -103,9 +102,6 @@ async def claim_device(device_id: str = Form(...), email: str = Form(...)):
     sb.table("users").update({"device_id": device_id, "claimed": True}).eq("email", email).execute()
     return {"status": "ok"}
 
-# ============================================================
-# Device: every-boot login (OTP)
-# ============================================================
 @app.post("/request-otp")
 async def request_otp(device_id: str = Form(...), email: str = Form(...)):
     email = email.strip().lower()
@@ -140,19 +136,75 @@ async def verify_otp(device_id: str = Form(...), otp: str = Form(...)):
     return {"status": "ok"}
 
 # ============================================================
-# Upload website -- customer scans the QR on the device, lands here,
-# picks a CSV, uploads it. Replaces the old USB-triggered /predict flow.
+# NEW: secure, single-use, short-lived upload sessions
 # ============================================================
-@app.get("/upload/{device_id}", response_class=HTMLResponse)
-def upload_form(device_id: str):
-    return UPLOAD_PAGE.replace("__DEVICE_ID__", device_id)
+SESSION_TTL_SECONDS = 120  # 2 minutes
 
-@app.post("/upload/{device_id}")
-async def upload_csv(device_id: str, file: UploadFile):
+def _hash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+@app.post("/upload-session")
+async def create_upload_session(request: Request, device_id: str = Form(...)):
+    # device_id must belong to a claimed device -- same trust model already
+    # used elsewhere in this app (device_id itself is the device's identity,
+    # established once via /claim-device + OTP).
+    r = sb.table("users").select("*").eq("device_id", device_id).eq("claimed", True).execute()
+    if not r.data:
+        return JSONResponse(status_code=403, content={"error": "Device not recognized."})
+    user_row = r.data[0]
+
+    token = secrets.token_urlsafe(32)
+    device_code = f"{secrets.randbelow(1000000):06d}"
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=SESSION_TTL_SECONDS)
+
+    sb.table("upload_sessions").insert({
+        "user_id": user_row["id"],
+        "device_id": device_id,
+        "token_hash": _hash(token),
+        "device_code_hash": _hash(device_code),
+        "expires_at": expires_at.isoformat(),
+    }).execute()
+
+    base = str(request.base_url).rstrip("/")
+    return {
+        "status": "ok",
+        "upload_url": f"{base}/upload?t={token}",
+        "device_code": device_code,
+        "expires_at": expires_at.isoformat(),
+        "ttl_seconds": SESSION_TTL_SECONDS,
+    }
+
+def _get_valid_session(token: str):
+    r = sb.table("upload_sessions").select("*").eq("token_hash", _hash(token)).execute()
+    if not r.data:
+        return None
+    session = r.data[0]
+    if session["revoked"] or session["used_at"]:
+        return None
+    if datetime.fromisoformat(session["expires_at"]) < datetime.now(timezone.utc):
+        return None
+    return session
+
+@app.get("/upload", response_class=HTMLResponse)
+def upload_form(t: str):
+    session = _get_valid_session(t)
+    if not session:
+        return HTMLResponse(SESSION_EXPIRED_PAGE, status_code=403)
+    return UPLOAD_PAGE.replace("__TOKEN__", t)
+
+@app.post("/upload")
+async def upload_csv(t: str = Form(...), device_code: str = Form(...), file: UploadFile = None):
+    session = _get_valid_session(t)
+    if not session:
+        return JSONResponse(status_code=403, content={"error": "QR expired or invalid. Generate a new QR."})
+
+    if _hash(device_code.strip()) != session.get("device_code_hash"):
+        return JSONResponse(status_code=403, content={"error": "Incorrect code shown on device."})
+
+    device_id = session["device_id"]  # derived from session, never trusted from client
+
     if not check_rate_limit(device_id):
-        return JSONResponse(status_code=429, content={
-            "error": "Too many uploads. Please wait a few minutes and try again."
-        })
+        return JSONResponse(status_code=429, content={"error": "Too many uploads. Please wait a few minutes and try again."})
 
     try:
         df = pd.read_csv(io.BytesIO(await file.read()))
@@ -183,8 +235,17 @@ async def upload_csv(device_id: str, file: UploadFile):
         "created_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
 
+    # single-use: revoke immediately after a successful upload
+    sb.table("upload_sessions").update({
+        "used_at": datetime.now(timezone.utc).isoformat(),
+        "revoked": True,
+    }).eq("id", session["id"]).execute()
+
     return {"status": "ok", "risk_percent": risk, "top_microbes": top10}
 
+# ============================================================
+# UNCHANGED
+# ============================================================
 @app.get("/latest/{device_id}")
 def latest(device_id: str):
     r = (sb.table("predictions").select("*")
