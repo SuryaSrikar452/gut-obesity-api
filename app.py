@@ -136,18 +136,20 @@ async def verify_otp(device_id: str = Form(...), otp: str = Form(...)):
     return {"status": "ok"}
 
 # ============================================================
-# NEW: secure, single-use, short-lived upload sessions
+# Secure, single-use, short-lived upload sessions
 # ============================================================
 SESSION_TTL_SECONDS = 120  # 2 minutes
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
+def _cleanup_expired_sessions():
+    sb.table("upload_sessions").delete().lt("expires_at", datetime.now(timezone.utc).isoformat()).execute()
+
 @app.post("/upload-session")
 async def create_upload_session(request: Request, device_id: str = Form(...)):
-    # device_id must belong to a claimed device -- same trust model already
-    # used elsewhere in this app (device_id itself is the device's identity,
-    # established once via /claim-device + OTP).
+    _cleanup_expired_sessions()
+
     r = sb.table("users").select("*").eq("device_id", device_id).eq("claimed", True).execute()
     if not r.data:
         return JSONResponse(status_code=403, content={"error": "Device not recognized."})
