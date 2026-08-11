@@ -24,6 +24,9 @@ app = FastAPI()
 with open("register_page.html") as f:
     REGISTER_PAGE = f.read()
 
+with open("upload_page.html") as f:
+    UPLOAD_PAGE = f.read()
+
 # ---- rate limiter (unchanged from before) ----
 RATE_LIMIT_MAX = 5
 RATE_LIMIT_WINDOW_SEC = 300
@@ -137,11 +140,15 @@ async def verify_otp(device_id: str = Form(...), otp: str = Form(...)):
     return {"status": "ok"}
 
 # ============================================================
-# Prediction pipeline -- triggered by the DEVICE after it reads a
-# CSV over USB (device POSTs the file bytes here).
+# Upload website -- customer scans the QR on the device, lands here,
+# picks a CSV, uploads it. Replaces the old USB-triggered /predict flow.
 # ============================================================
-@app.post("/predict/{device_id}")
-async def predict(device_id: str, file: UploadFile):
+@app.get("/upload/{device_id}", response_class=HTMLResponse)
+def upload_form(device_id: str):
+    return UPLOAD_PAGE.replace("__DEVICE_ID__", device_id)
+
+@app.post("/upload/{device_id}")
+async def upload_csv(device_id: str, file: UploadFile):
     if not check_rate_limit(device_id):
         return JSONResponse(status_code=429, content={
             "error": "Too many uploads. Please wait a few minutes and try again."

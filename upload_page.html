@@ -1,460 +1,111 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gut Health Analyzer</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link
-    href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap"
-    rel="stylesheet">
-  <style>
-    :root {
-      --primary: #2E7D32;
-      --secondary: #43A047;
-      --accent: #66BB6A;
-      --success: #4CAF50;
-      --bg: #F7FBF8;
-      --card: #FFFFFF;
-      --border: rgba(46, 125, 50, 0.12);
-      --text: #1B2E1D;
-      --text-soft: #5B6E5D;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background: var(--bg);
-      font-family: 'Inter', sans-serif;
-      color: var(--text);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-      position: relative;
-      overflow-x: hidden;
-    }
-
-    /* ambient organic blobs */
-    .blob {
-      position: fixed;
-      border-radius: 50%;
-      filter: blur(60px);
-      opacity: 0.35;
-      z-index: 0;
-      animation: drift 14s ease-in-out infinite;
-    }
-
-    .blob.b1 {
-      width: 420px;
-      height: 420px;
-      background: var(--accent);
-      top: -120px;
-      left: -120px;
-    }
-
-    .blob.b2 {
-      width: 340px;
-      height: 340px;
-      background: var(--secondary);
-      bottom: -100px;
-      right: -100px;
-      animation-delay: -6s;
-    }
-
-    @keyframes drift {
-
-      0%,
-      100% {
-        transform: translate(0, 0) scale(1);
-      }
-
-      50% {
-        transform: translate(20px, -20px) scale(1.06);
-      }
-    }
-
-    .wrap {
-      position: relative;
-      z-index: 1;
-      max-width: 460px;
-      width: 100%;
-      text-align: center;
-    }
-
-    .logo {
-      font-size: 40px;
-      margin-bottom: 6px;
-    }
-
-    h1 {
-      font-family: 'Fraunces', serif;
-      font-weight: 600;
-      font-size: clamp(28px, 5vw, 36px);
-      margin: 0 0 10px;
-      letter-spacing: -0.01em;
-    }
-
-    .subtitle {
-      color: var(--text-soft);
-      font-size: 16px;
-      line-height: 1.5;
-      margin: 0 auto 32px;
-      max-width: 360px;
-    }
-
-    .card {
-      background: var(--card);
-      border-radius: 28px;
-      padding: 36px 28px;
-      box-shadow: 0 20px 60px rgba(46, 125, 50, 0.10), 0 2px 8px rgba(46, 125, 50, 0.06);
-      border: 1px solid var(--border);
-      transition: box-shadow 0.3s ease;
-    }
-
-    .dropzone {
-      border: 2px dashed var(--accent);
-      border-radius: 20px;
-      padding: 36px 20px;
-      cursor: pointer;
-      transition: all 0.25s ease;
-      background: linear-gradient(180deg, rgba(102, 187, 106, 0.04), rgba(102, 187, 106, 0.01));
-    }
-
-    .dropzone:hover,
-    .dropzone.drag {
-      border-color: var(--primary);
-      background: linear-gradient(180deg, rgba(102, 187, 106, 0.10), rgba(102, 187, 106, 0.03));
-      transform: translateY(-2px);
-    }
-
-    .upload-icon {
-      width: 56px;
-      height: 56px;
-      margin: 0 auto 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 50%;
-      background: linear-gradient(135deg, var(--secondary), var(--accent));
-      color: white;
-    }
-
-    .drop-text {
-      font-weight: 600;
-      font-size: 16px;
-      margin-bottom: 4px;
-    }
-
-    .drop-sub {
-      color: var(--text-soft);
-      font-size: 13px;
-    }
-
-    .filename {
-      margin-top: 14px;
-      font-size: 14px;
-      color: var(--primary);
-      font-weight: 500;
-      display: none;
-    }
-
-    .send-btn {
-      margin-top: 22px;
-      width: 100%;
-      padding: 16px;
-      border: none;
-      border-radius: 16px;
-      background: linear-gradient(135deg, var(--primary), var(--secondary));
-      color: white;
-      font-size: 17px;
-      font-weight: 600;
-      font-family: inherit;
-      cursor: pointer;
-      box-shadow: 0 10px 24px rgba(46, 125, 50, 0.28);
-      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.2s ease;
-    }
-
-    .send-btn:active {
-      transform: scale(0.98);
-    }
-
-    .send-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      box-shadow: none;
-    }
-
-    input[type=file] {
-      display: none;
-    }
-
-    /* States */
-    .state {
-      display: none;
-    }
-
-    .state.active {
-      display: block;
-      animation: fadeUp 0.4s ease;
-    }
-
-    @keyframes fadeUp {
-      from {
-        opacity: 0;
-        transform: translateY(10px);
-      }
-
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-
-    /* Loading */
-    .loader-ring {
-      width: 64px;
-      height: 64px;
-      margin: 10px auto 24px;
-      border-radius: 50%;
-      border: 4px solid var(--border);
-      border-top-color: var(--primary);
-      animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    .loading-msg {
-      font-size: 15px;
-      color: var(--text-soft);
-      min-height: 20px;
-      transition: opacity 0.3s;
-    }
-
-    /* Success */
-    .check-wrap {
-      width: 84px;
-      height: 84px;
-      margin: 8px auto 20px;
-    }
-
-    .check-circle {
-      stroke: var(--success);
-      stroke-width: 3;
-      fill: none;
-      stroke-dasharray: 166;
-      stroke-dashoffset: 166;
-      animation: circle 0.6s ease forwards;
-    }
-
-    .check-mark {
-      stroke: var(--success);
-      stroke-width: 4;
-      fill: none;
-      stroke-linecap: round;
-      stroke-dasharray: 48;
-      stroke-dashoffset: 48;
-      animation: mark 0.4s ease 0.5s forwards;
-    }
-
-    @keyframes circle {
-      to {
-        stroke-dashoffset: 0;
-      }
-    }
-
-    @keyframes mark {
-      to {
-        stroke-dashoffset: 0;
-      }
-    }
-
-    .success-list {
-      text-align: left;
-      margin: 20px auto;
-      max-width: 300px;
-      color: var(--text-soft);
-      font-size: 14.5px;
-      line-height: 2;
-    }
-
-    .success-list span {
-      color: var(--success);
-      font-weight: 700;
-      margin-right: 6px;
-    }
-
-    .again-btn {
-      margin-top: 8px;
-      background: none;
-      border: 2px solid var(--primary);
-      color: var(--primary);
-      padding: 13px 20px;
-      border-radius: 16px;
-      font-weight: 600;
-      font-size: 15px;
-      font-family: inherit;
-      cursor: pointer;
-      width: 100%;
-    }
-
-    .again-btn:hover {
-      background: rgba(46, 125, 50, 0.06);
-    }
-
-    .error-msg {
-      color: #C62828;
-      font-size: 14px;
-      margin-top: 14px;
-      display: none;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upload Your Sample</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #F7FBF8;
+    color: #1B2E1D;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+    padding: 20px;
+  }
+  .card {
+    background: #fff;
+    border: 1px solid #66BB6A;
+    border-radius: 16px;
+    padding: 32px;
+    max-width: 400px;
+    width: 100%;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+    text-align: center;
+  }
+  h1 { font-size: 22px; margin-bottom: 8px; color: #2E7D32; }
+  p.sub { color: #5B6E5D; font-size: 14px; margin-bottom: 24px; }
+  input[type=file] {
+    width: 100%;
+    padding: 12px;
+    border: 1px dashed #66BB6A;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 14px;
+  }
+  button {
+    width: 100%;
+    padding: 12px;
+    background: #2E7D32;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { background: #A5D6A7; cursor: not-allowed; }
+  #msg { margin-top: 16px; font-size: 14px; display: none; padding: 10px; border-radius: 8px; }
+  #msg.ok { background: #E8F5E9; color: #2E7D32; display: block; }
+  #msg.err { background: #FDECEA; color: #D32F2F; display: block; }
+  #spinner { display: none; margin-top: 12px; font-size: 13px; color: #5B6E5D; }
+</style>
 </head>
-
 <body>
-  <div class="blob b1"></div>
-  <div class="blob b2"></div>
-
-  <div class="wrap">
-    <div class="logo">🌿</div>
-    <h1>Gut Health Analyzer</h1>
-    <p class="subtitle">Upload your microbiome report and receive an AI-powered gut health assessment in seconds.</p>
-
-    <div class="card">
-      <!-- STATE 1: Upload -->
-      <div class="state active" id="state-upload">
-        <div class="dropzone" id="dropzone">
-          <div class="upload-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-              <path d="M12 16V4M12 4L7 9M12 4l5 5" stroke="white" stroke-width="2" stroke-linecap="round"
-                stroke-linejoin="round" />
-              <path d="M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3" stroke="white" stroke-width="2" stroke-linecap="round" />
-            </svg>
-          </div>
-          <div class="drop-text">Drag & drop your file here</div>
-          <div class="drop-sub">or tap to browse · CSV files only</div>
-          <div class="filename" id="filename"></div>
-        </div>
-        <input type="file" id="fileInput" accept=".csv">
-        <button class="send-btn" id="sendBtn" disabled>Upload & Analyze</button>
-        <div class="error-msg" id="errorMsg"></div>
-      </div>
-
-      <!-- STATE 2: Loading -->
-      <div class="state" id="state-loading">
-        <div class="loader-ring"></div>
-        <div class="loading-msg" id="loadingMsg">Reading microbiome profile...</div>
-      </div>
-
-      <!-- STATE 3: Success -->
-      <div class="state" id="state-success">
-        <svg class="check-wrap" viewBox="0 0 52 52">
-          <circle class="check-circle" cx="26" cy="26" r="23" />
-          <path class="check-mark" d="M14 27l7 7 17-17" />
-        </svg>
-        <h1 style="font-size:24px;">Analysis Complete</h1>
-        <p class="subtitle" style="margin-bottom:6px;">Your gut microbiome has been securely processed.</p>
-        <div class="success-list">
-          <div><span>✓</span>AI analysis completed</div>
-          <div><span>✓</span>Results sent to your Gut Health Display</div>
-          <div><span>✓</span>You may now check your device</div>
-        </div>
-        <button class="again-btn" id="againBtn">Upload Another Sample</button>
-      </div>
-    </div>
+  <div class="card">
+    <h1>Upload Your Sample</h1>
+    <p class="sub">Select your gut microbiome CSV file to analyze.</p>
+    <form id="uploadForm">
+      <input type="file" id="csvFile" accept=".csv" required>
+      <button type="submit" id="submitBtn">Upload &amp; Analyze</button>
+    </form>
+    <div id="spinner">Processing, please wait...</div>
+    <div id="msg"></div>
   </div>
 
   <script>
     const deviceId = "__DEVICE_ID__";
-    const dropzone = document.getElementById('dropzone');
-    const fileInput = document.getElementById('fileInput');
-    const sendBtn = document.getElementById('sendBtn');
-    const filenameEl = document.getElementById('filename');
-    const errorMsg = document.getElementById('errorMsg');
-    let selectedFile = null;
+    const form = document.getElementById('uploadForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const spinner = document.getElementById('spinner');
+    const msg = document.getElementById('msg');
 
-    function showState(id) {
-      document.querySelectorAll('.state').forEach(s => s.classList.remove('active'));
-      document.getElementById(id).classList.add('active');
-    }
-
-    dropzone.addEventListener('click', () => fileInput.click());
-    dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
-    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
-    dropzone.addEventListener('drop', e => {
+    form.addEventListener('submit', async function(e) {
       e.preventDefault();
-      dropzone.classList.remove('drag');
-      if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
-    });
-    fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+      const file = document.getElementById('csvFile').files[0];
+      if (!file) return;
 
-    function handleFile(file) {
-      selectedFile = file;
-      filenameEl.textContent = "📄 " + file.name;
-      filenameEl.style.display = 'block';
-      sendBtn.disabled = false;
-      errorMsg.style.display = 'none';
-    }
-
-    const messages = [
-      "Reading microbiome profile...",
-      "Identifying bacterial species...",
-      "Running AI prediction...",
-      "Calculating health score...",
-      "Preparing personalized insights..."
-    ];
-
-    sendBtn.addEventListener('click', async () => {
-      if (!selectedFile) return;
-      showState('state-loading');
-      let i = 0;
-      const msgEl = document.getElementById('loadingMsg');
-      const interval = setInterval(() => {
-        i = (i + 1) % messages.length;
-        msgEl.style.opacity = 0;
-        setTimeout(() => { msgEl.textContent = messages[i]; msgEl.style.opacity = 1; }, 250);
-      }, 1400);
+      msg.className = ''; msg.style.display = 'none';
+      submitBtn.disabled = true;
+      spinner.style.display = 'block';
 
       const formData = new FormData();
-      formData.append('file', selectedFile);
+      formData.append('file', file);
 
       try {
         const res = await fetch('/upload/' + deviceId, { method: 'POST', body: formData });
-        clearInterval(interval);
-        if (!res.ok) {
-          let msg = "Something went wrong. Please try again.";
-          try {
-            const data = await res.json();
-            if (data.error) msg = data.error;
-          } catch (e) { }
-          throw new Error(msg);
-        }
-        showState('state-success');
-      } catch (err) {
-        clearInterval(interval);
-        showState('state-upload');
-        errorMsg.textContent = err.message || "Something went wrong. Please try again.";
-        errorMsg.style.display = 'block';
-      }
-    });
+        const data = await res.json();
+        spinner.style.display = 'none';
+        submitBtn.disabled = false;
 
-    document.getElementById('againBtn').addEventListener('click', () => {
-      selectedFile = null;
-      filenameEl.style.display = 'none';
-      sendBtn.disabled = true;
-      fileInput.value = '';
-      showState('state-upload');
+        if (!res.ok) {
+          msg.textContent = data.error || "Something went wrong. Please try again.";
+          msg.className = 'err';
+        } else {
+          msg.textContent = "Uploaded! Check your device screen for results.";
+          msg.className = 'ok';
+          form.reset();
+        }
+      } catch (err) {
+        spinner.style.display = 'none';
+        submitBtn.disabled = false;
+        msg.textContent = "Network error. Please try again.";
+        msg.className = 'err';
+      }
     });
   </script>
 </body>
-
 </html>
