@@ -9,7 +9,18 @@ import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
 
-DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recommender_data")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _data_path(name):
+    """Look in recommender_data/ first, then the repo root."""
+    for d in (os.path.join(_HERE, "recommender_data"), _HERE):
+        f = os.path.join(d, name)
+        if os.path.exists(f):
+            return f
+    raise FileNotFoundError(
+        f"{name} not found. Add the 4 xlsx files to a 'recommender_data' folder in the repo."
+    )
 CLIN = ["Age", "BMI", "FBG_mgdL"]
 IDS = ["Sample_ID", "Table_S1_Sample_ID"]
 DROP = ["HbA1c"]
@@ -54,7 +65,7 @@ def _parse_parts(text):
 class _Kind:
     def __init__(self, data_file, db_file, kind):
         self.kind = kind
-        df = pd.read_excel(os.path.join(DATA, data_file))
+        df = pd.read_excel(_data_path(data_file))
         self.targets = [c for c in df.columns if c.startswith("EC_")]
         self.microbes = [c for c in df.columns if c not in IDS + DROP + CLIN + self.targets]
         self.clin = df[CLIN].values.astype(float)
@@ -67,7 +78,7 @@ class _Kind:
         Y = ((df[self.targets] - mu) / sd).values
         self.model = XGBClassifier(**XGB_PARAMS).fit(X, Y.argmax(axis=1))
 
-        db = pd.read_excel(os.path.join(DATA, db_file), sheet_name=0)
+        db = pd.read_excel(_data_path(db_file), sheet_name=0)
         if kind == "phyto":
             db["EC No"] = db["EC No"].astype(str).str.strip()
             self.ec_col, self.pic_col = "EC No", "pIC50"
