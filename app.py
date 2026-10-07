@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, UploadFile, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from supabase import create_client
+from recommender import recommend_all
 
 # ============================================================
 # ENV VARS you must set on Render (Dashboard -> your service -> Environment):
@@ -254,6 +255,20 @@ async def upload_csv(t: str = Form(...), device_code: str = Form(...), file: Upl
     }).eq("id", session["id"]).execute()
 
     return {"status": "ok", "risk_percent": risk, "top_microbes": top10}
+
+# ============================================================
+# Phytochemical + food recommendation (called by the device)
+# ============================================================
+@app.post("/recommend")
+async def recommend(device_id: str = Form(...), age: float = Form(...),
+                    height_cm: float = Form(...), weight_kg: float = Form(...),
+                    fbg: float = Form(...)):
+    r = sb.table("users").select("id").eq("device_id", device_id).eq("claimed", True).execute()
+    if not r.data:
+        return JSONResponse(status_code=403, content={"error": "Device not recognized."})
+    if not (1 <= age <= 120 and 100 <= height_cm <= 250 and 20 <= weight_kg <= 300 and 40 <= fbg <= 600):
+        return JSONResponse(status_code=400, content={"error": "Age, height, weight or glucose out of range."})
+    return {"status": "ok", **recommend_all(age, height_cm, weight_kg, fbg)}
 
 # ============================================================
 # UNCHANGED

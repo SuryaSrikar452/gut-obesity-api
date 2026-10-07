@@ -2,7 +2,9 @@ fastapi
 uvicorn
 python-multipart
 pandas
+openpyxl
 xgboost
+scikit-learn
 shap
 supabase
 requests
