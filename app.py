@@ -21,6 +21,16 @@ explainer = shap.TreeExplainer(model)
 
 app = FastAPI()
 
+# Root endpoint so opening the Render service URL does not show "Not Found".
+# This does not change any existing API routes used by the ESP32 or upload page.
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "service": "Gut Health Analyzer API",
+        "message": "Render service is running."
+    }
+
 with open("register_page.html") as f:
     REGISTER_PAGE = f.read()
 
