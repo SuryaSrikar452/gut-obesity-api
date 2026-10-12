@@ -1,6 +1,6 @@
 import os, io, time, random, secrets, hashlib, requests, shap, pandas as pd, xgboost as xgb
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, UploadFile, Form, Request
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from supabase import create_client
 from recommender import recommend_all
@@ -56,6 +56,17 @@ def check_rate_limit(device_id: str):
         return False
     log.append(now)
     return True
+
+# ---- OTP attempt limiter (6-digit code must not be brute-forceable) ----
+OTP_MAX_ATTEMPTS = 5
+OTP_ATTEMPT_WINDOW_SEC = 900
+_otp_attempts = {}
+
+def otp_attempts_exceeded(device_id: str) -> bool:
+    now = time.time()
+    log = _otp_attempts.setdefault(device_id, [])
+    log[:] = [t for t in log if now - t < OTP_ATTEMPT_WINDOW_SEC]
+    return len(log) >= OTP_MAX_ATTEMPTS
 
 BREVO_API_KEY = os.environ["BREVO_API_KEY"]
 SENDER_EMAIL = "guthealdevice@gmail.com"
@@ -120,7 +131,7 @@ async def request_otp(device_id: str = Form(...), email: str = Form(...)):
     if not r.data:
         return JSONResponse(status_code=403, content={"error": "Email/device do not match our records."})
 
-    otp = str(random.randint(100000, 999999))
+    otp = f"{secrets.randbelow(1000000):06d}"  # CSPRNG, zero-padded (random.randint was predictable)
     expires = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
     sb.table("users").update({"otp_code": otp, "otp_expires_at": expires}).eq("email", email).execute()
 
@@ -137,13 +148,18 @@ async def verify_otp(device_id: str = Form(...), otp: str = Form(...)):
     if not r.data:
         return JSONResponse(status_code=403, content={"error": "Device not recognized."})
 
+    if otp_attempts_exceeded(device_id):
+        return JSONResponse(status_code=429, content={"error": "Too many attempts. Request a new OTP later."})
+
     row = r.data[0]
-    if not row["otp_code"] or row["otp_code"] != otp:
+    if not row["otp_code"] or not secrets.compare_digest(str(row["otp_code"]), otp.strip()):
+        _otp_attempts.setdefault(device_id, []).append(time.time())
         return JSONResponse(status_code=403, content={"error": "Incorrect OTP."})
     if datetime.fromisoformat(row["otp_expires_at"]) < datetime.now(timezone.utc):
         return JSONResponse(status_code=403, content={"error": "OTP expired. Request a new one."})
 
     sb.table("users").update({"otp_code": None, "otp_expires_at": None}).eq("device_id", device_id).execute()
+    _otp_attempts.pop(device_id, None)
     return {"status": "ok"}
 
 # ============================================================
@@ -178,7 +194,10 @@ async def create_upload_session(request: Request, device_id: str = Form(...)):
         "expires_at": expires_at.isoformat(),
     }).execute()
 
-    base = str(request.base_url).rstrip("/")
+    base = (os.environ.get("PUBLIC_BASE_URL") or str(request.base_url)).rstrip("/")
+    # Behind Render's proxy request.base_url can come back as http://; QR must be https.
+    if base.startswith("http://") and "localhost" not in base and "127.0.0.1" not in base:
+        base = "https://" + base[len("http://"):]
     return {
         "status": "ok",
         "upload_url": f"{base}/upload?t={token}",
@@ -206,7 +225,7 @@ def upload_form(t: str):
     return UPLOAD_PAGE.replace("__TOKEN__", t)
 
 @app.post("/upload")
-async def upload_csv(t: str = Form(...), device_code: str = Form(...), file: UploadFile = None):
+async def upload_csv(t: str = Form(...), device_code: str = Form(...), file: UploadFile = File(...)):
     session = _get_valid_session(t)
     if not session:
         return JSONResponse(status_code=403, content={"error": "QR expired or invalid. Generate a new QR."})
@@ -276,7 +295,7 @@ async def dashboard_data(
     if not r.data:
         return JSONResponse(status_code=403, content={"error": "Device not recognized."})
 
-    if not (0 <= glucose <= 1000 and 1 <= age <= 120 and
+    if not (40 <= glucose <= 600 and 1 <= age <= 120 and
             100 <= height_cm <= 250 and 20 <= weight_kg <= 300):
         return JSONResponse(status_code=400, content={"error": "Dashboard input is out of range."})
 
