@@ -257,6 +257,57 @@ async def upload_csv(t: str = Form(...), device_code: str = Form(...), file: Upl
     return {"status": "ok", "risk_percent": risk, "top_microbes": top10}
 
 # ============================================================
+# Unified dashboard data
+# ============================================================
+@app.post("/dashboard-data")
+async def dashboard_data(
+    device_id: str = Form(...),
+    glucose: float = Form(...),
+    age: float = Form(...),
+    height_cm: float = Form(...),
+    weight_kg: float = Form(...),
+):
+    """Return the latest gut prediction and recommendations for a claimed device.
+
+    The glucose input is supplied by the device and passed to the recommender
+    as FBG, matching the existing recommendation model's input contract.
+    """
+    r = sb.table("users").select("id").eq("device_id", device_id).eq("claimed", True).execute()
+    if not r.data:
+        return JSONResponse(status_code=403, content={"error": "Device not recognized."})
+
+    if not (0 <= glucose <= 1000 and 1 <= age <= 120 and
+            100 <= height_cm <= 250 and 20 <= weight_kg <= 300):
+        return JSONResponse(status_code=400, content={"error": "Dashboard input is out of range."})
+
+    latest_row = (sb.table("predictions").select("risk_percent,top_microbes,created_at")
+                  .eq("device_id", device_id)
+                  .order("created_at", desc=True).limit(1).execute())
+
+    if latest_row.data:
+        gut = latest_row.data[0]
+        risk_percent = float(gut.get("risk_percent", 0))
+        top_microbes = gut.get("top_microbes", []) or []
+        created_at = gut.get("created_at")
+    else:
+        risk_percent = None
+        top_microbes = []
+        created_at = None
+
+    recommendations = recommend_all(age, height_cm, weight_kg, glucose)
+
+    return {
+        "status": "ok",
+        "glucose": round(float(glucose), 1),
+        "gut": {
+            "risk_percent": round(risk_percent, 1) if risk_percent is not None else None,
+            "top_microbes": top_microbes,
+            "created_at": created_at,
+        },
+        "recommendations": recommendations,
+    }
+
+# ============================================================
 # Phytochemical + food recommendation (called by the device)
 # ============================================================
 @app.post("/recommend")
