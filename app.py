@@ -68,6 +68,20 @@ def otp_attempts_exceeded(device_id: str) -> bool:
     log[:] = [t for t in log if now - t < OTP_ATTEMPT_WINDOW_SEC]
     return len(log) >= OTP_MAX_ATTEMPTS
 
+# ---- OTP *request* limiter (stops email spam / abuse of /request-otp) ----
+OTP_REQ_MAX = 3
+OTP_REQ_WINDOW_SEC = 600
+_otp_requests = {}
+
+def otp_request_allowed(key: str) -> bool:
+    now = time.time()
+    log = _otp_requests.setdefault(key, [])
+    log[:] = [t for t in log if now - t < OTP_REQ_WINDOW_SEC]
+    if len(log) >= OTP_REQ_MAX:
+        return False
+    log.append(now)
+    return True
+
 BREVO_API_KEY = os.environ["BREVO_API_KEY"]
 SENDER_EMAIL = "guthealdevice@gmail.com"
 
@@ -104,61 +118,77 @@ async def register(email: str = Form(...)):
     return {"status": "ok", "message": "Registered. Power on your device and enter this email to activate it."}
 
 # ============================================================
-# Device claim / OTP login -- UNCHANGED
+# Device claim: a device is linked to an email ONLY after the emailed OTP
+# is verified. /request-otp emails a code (and records the device as pending),
+# /verify-otp checks the code and sets claimed=True.
 # ============================================================
-@app.post("/claim-device")
-async def claim_device(device_id: str = Form(...), email: str = Form(...)):
+def _start_otp(device_id: str, email: str):
+    """Validate the pairing, store an OTP and email it. Returns a JSONResponse on failure, else None."""
     email = email.strip().lower()
     r = sb.table("users").select("*").eq("email", email).execute()
     if not r.data:
         return JSONResponse(status_code=404, content={"error": "Email not registered. Please register on our website first."})
-
     row = r.data[0]
+
     if row["claimed"] and row["device_id"] != device_id:
         return JSONResponse(status_code=403, content={"error": "This email is already linked to a different device."})
 
-    already_claimed_elsewhere = sb.table("users").select("*").eq("device_id", device_id).eq("claimed", True).execute()
-    if already_claimed_elsewhere.data and already_claimed_elsewhere.data[0]["email"] != email:
+    other = sb.table("users").select("email").eq("device_id", device_id).eq("claimed", True).execute()
+    if other.data and other.data[0]["email"] != email:
         return JSONResponse(status_code=403, content={"error": "This device is already linked to a different email."})
 
-    sb.table("users").update({"device_id": device_id, "claimed": True}).eq("email", email).execute()
-    return {"status": "ok"}
+    if not (otp_request_allowed("dev:" + device_id) and otp_request_allowed("mail:" + email)):
+        return JSONResponse(status_code=429, content={"error": "Too many code requests. Wait a few minutes and try again."})
 
-@app.post("/request-otp")
-async def request_otp(device_id: str = Form(...), email: str = Form(...)):
-    email = email.strip().lower()
-    r = sb.table("users").select("*").eq("email", email).eq("device_id", device_id).eq("claimed", True).execute()
-    if not r.data:
-        return JSONResponse(status_code=403, content={"error": "Email/device do not match our records."})
-
-    otp = f"{secrets.randbelow(1000000):06d}"  # CSPRNG, zero-padded (random.randint was predictable)
+    otp = f"{secrets.randbelow(1000000):06d}"  # CSPRNG, zero-padded
     expires = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
-    sb.table("users").update({"otp_code": otp, "otp_expires_at": expires}).eq("email", email).execute()
+    # Record the device as pending (claimed stays as-is); linking happens in /verify-otp.
+    update = {"otp_code": otp, "otp_expires_at": expires}
+    if not row["claimed"]:
+        update["device_id"] = device_id
+    sb.table("users").update(update).eq("email", email).execute()
 
     try:
         send_otp_email(email, otp)
     except Exception:
         return JSONResponse(status_code=500, content={"error": "Could not send OTP email. Try again."})
+    return None
 
-    return {"status": "ok"}
+@app.post("/request-otp")
+async def request_otp(device_id: str = Form(...), email: str = Form(...)):
+    err = _start_otp(device_id, email)
+    return err if err is not None else {"status": "ok"}
+
+@app.post("/claim-device")
+async def claim_device(device_id: str = Form(...), email: str = Form(...)):
+    # Deprecated: no longer links anything by itself (that allowed anyone who knew a
+    # registered email to claim it). It now just emails the verification code.
+    err = _start_otp(device_id, email)
+    return err if err is not None else {"status": "ok", "next": "verify-otp"}
 
 @app.post("/verify-otp")
 async def verify_otp(device_id: str = Form(...), otp: str = Form(...)):
-    r = sb.table("users").select("*").eq("device_id", device_id).execute()
-    if not r.data:
-        return JSONResponse(status_code=403, content={"error": "Device not recognized."})
-
     if otp_attempts_exceeded(device_id):
         return JSONResponse(status_code=429, content={"error": "Too many attempts. Request a new OTP later."})
 
-    row = r.data[0]
-    if not row["otp_code"] or not secrets.compare_digest(str(row["otp_code"]), otp.strip()):
+    r = sb.table("users").select("*").eq("device_id", device_id).execute()
+    if not r.data:
+        return JSONResponse(status_code=403, content={"error": "Device not recognized. Request a code first."})
+
+    otp = otp.strip()
+    row = next((x for x in r.data
+                if x.get("otp_code") and secrets.compare_digest(str(x["otp_code"]), otp)), None)
+    if row is None:
         _otp_attempts.setdefault(device_id, []).append(time.time())
         return JSONResponse(status_code=403, content={"error": "Incorrect OTP."})
-    if datetime.fromisoformat(row["otp_expires_at"]) < datetime.now(timezone.utc):
+
+    expires = row.get("otp_expires_at")
+    if not expires or datetime.fromisoformat(expires) < datetime.now(timezone.utc):
         return JSONResponse(status_code=403, content={"error": "OTP expired. Request a new one."})
 
-    sb.table("users").update({"otp_code": None, "otp_expires_at": None}).eq("device_id", device_id).execute()
+    # Code proven: this device is now linked to the email.
+    sb.table("users").update({"claimed": True, "device_id": device_id,
+                              "otp_code": None, "otp_expires_at": None}).eq("id", row["id"]).execute()
     _otp_attempts.pop(device_id, None)
     return {"status": "ok"}
 
