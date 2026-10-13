@@ -1,0 +1,62 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gut Health Analyzer - Analyze</title></head><body>
+<div id="login" hidden></div>
+<div id="main" hidden><div id="nav"></div><main>
+ <h1>New analysis</h1>
+ <div class="card"><h3>1. Glucose value</h3>
+  <label><input type="radio" name="gsrc" value="previous" checked> Use a previous reading</label>
+  <label><input type="radio" name="gsrc" value="new_test"> Test again on the device</label>
+  <div id="gprev"></div>
+  <div id="gnew" hidden><p>Press <b>Glucose Test</b> on the device and follow the screen. When it finishes, tap refresh.</p>
+   <button class="sec" id="grefresh">Refresh readings</button></div>
+  <p class="warn">The models use glucose as <b>fasting</b> blood glucose. Mark the reading as fasting only if it was measured fasting. The sensor is experimental and not clinically validated.</p>
+ </div>
+ <div class="card"><h3>2. Your profile</h3>
+  <input id="age" type="number" placeholder="Age" min="1" max="120"><input id="hgt" type="number" placeholder="Height cm" min="100" max="250"><input id="wgt" type="number" placeholder="Weight kg" min="20" max="300"></div>
+ <div class="card"><h3>3. Microbiome CSV</h3>
+  <p class="muted">One row per sample. Needs the 20 species columns (percent relative abundance of the whole community). An optional sample ID column is detected automatically.</p>
+  <input id="csv" type="file" accept=".csv,text/csv"><div id="smp"></div><p id="cerr" class="err"></p></div>
+ <button id="run" disabled>Run analysis</button> <span id="rmsg"></span>
+</main></div>
+<script src="/static/common.js"></script>
+<script>
+$('#nav').innerHTML = navBar('/app');
+let readings = [], chosen = null, sampleId = null, idem = crypto.randomUUID();
+const src = () => document.querySelector('input[name=gsrc]:checked').value;
+async function loadReadings() {
+  try { readings = (await api('/glucose?limit=50')).items; } catch (e) { $('#gprev').innerHTML = '<p class="err">' + esc(e.message) + '</p>'; return; }
+  if (!readings.length) { $('#gprev').innerHTML = '<p class="muted">No readings yet. Choose "Test again".</p>'; return; }
+  if (src() === 'new_test') chosen = readings[0].id;
+  $('#gprev').innerHTML = '<table>' + readings.map((r, i) => `<tr><td><input type="radio" name="gr" value="${esc(r.id)}" ${i === 0 ? 'checked' : ''}></td>
+   <td>${esc(r.value)} ${esc(r.unit)}</td><td>${fmtTime(r.measured_at)}</td><td>${r.fasting === true ? 'fasting' : r.fasting === false ? 'not fasting' : 'fasting unknown'}
+   ${r.fasting == null ? `<button class="sec" data-f="${esc(r.id)}">Mark fasting</button>` : ''}</td></tr>`).join('') + '</table>';
+  document.querySelectorAll('[data-f]').forEach(b => b.onclick = async () => {
+    await api('/glucose/' + b.dataset.f + '/fasting', { method: 'PATCH', body: new URLSearchParams({ fasting: 'true' }) }); loadReadings(); });
+  chosen = readings[0].id; document.querySelectorAll('input[name=gr]').forEach(r => r.onchange = () => { chosen = r.value; check(); });
+  check();
+}
+function check() { $('#run').disabled = !(chosen && $('#csv').files[0] && $('#age').value && $('#hgt').value && $('#wgt').value); }
+document.querySelectorAll('input[name=gsrc]').forEach(r => r.onchange = () => { $('#gnew').hidden = src() !== 'new_test'; $('#gprev').hidden = src() === 'new_test' && false; loadReadings(); });
+$('#grefresh').onclick = loadReadings;
+['age', 'hgt', 'wgt'].forEach(i => $('#' + i).oninput = check);
+$('#csv').onchange = async () => {
+  $('#cerr').textContent = ''; $('#smp').innerHTML = ''; sampleId = null;
+  const fd = new FormData(); fd.append('file', $('#csv').files[0]);
+  try { const r = await api('/csv/inspect', { method: 'POST', body: fd });
+    if (r.sample_ids.length > 1) { $('#smp').innerHTML = 'Sample: <select id="ssel">' + r.sample_ids.map(s => `<option>${esc(s)}</option>`).join('') + '</select>'; sampleId = r.sample_ids[0]; $('#ssel').onchange = e => sampleId = e.target.value; }
+    if (r.warnings.length) $('#cerr').textContent = r.warnings.join(' ');
+  } catch (e) { $('#cerr').textContent = e.message + (e.data && e.data.details ? ' ' + e.data.details.slice(0, 6).join('; ') : ''); $('#csv').value = ''; }
+  check();
+};
+$('#run').onclick = async () => {
+  const fd = new FormData();
+  fd.append('glucose_reading_id', chosen); fd.append('glucose_source', src());
+  fd.append('age', $('#age').value); fd.append('height_cm', $('#hgt').value); fd.append('weight_kg', $('#wgt').value);
+  if (sampleId) fd.append('sample_id', sampleId); fd.append('file', $('#csv').files[0]);
+  $('#run').disabled = true; $('#rmsg').textContent = 'Running...';
+  try { const r = await api('/analyses', { method: 'POST', body: fd, headers: { 'Idempotency-Key': idem } });
+    location.href = '/dashboard/reports?open=' + encodeURIComponent(r.report_id); }
+  catch (e) { $('#rmsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; $('#run').disabled = false; }
+};
+requireLogin(loadReadings);
+</script></body></html>

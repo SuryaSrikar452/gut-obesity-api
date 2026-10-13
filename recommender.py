@@ -2,12 +2,18 @@
 Phytochemical + food recommender (from hba1c_input_phyto_output_model).
 Models are re-fitted at startup from the xlsx cohort files with the same
 parameters/seed as the original scripts, so no .joblib / pickle version
-problems on Render. Input: age, height_cm, weight_kg, fbg.
+problems on Render.
+
+Input (unchanged model contract): [Age, BMI, FBG] + CLR of the 20 species.
+The 20 species now come from the USER'S uploaded microbiome sample. The old
+"nearest cohort patient" substitution has been removed.
 """
+import hashlib
 import os
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
+from core.microbiome import SPECIES, clr as _clr_shared
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -34,10 +40,7 @@ XGB_PARAMS = dict(
 )
 
 
-def _clr(M):
-    M = np.asarray(M, float)
-    lg = np.log(M + 1e-3)
-    return lg - lg.mean() if M.ndim == 1 else lg - lg.mean(axis=1, keepdims=True)
+_clr = _clr_shared
 
 
 def bmi_category(b):
@@ -68,6 +71,8 @@ class _Kind:
         df = pd.read_excel(_data_path(data_file))
         self.targets = [c for c in df.columns if c.startswith("EC_")]
         self.microbes = [c for c in df.columns if c not in IDS + DROP + CLIN + self.targets]
+        if self.microbes != SPECIES:
+            raise RuntimeError(f"{data_file}: microbe columns differ from core.microbiome.SPECIES")
         self.clin = df[CLIN].values.astype(float)
         self.mic = df[self.microbes].values.astype(float)
         self.c_mu = self.clin.mean(axis=0)
@@ -93,12 +98,14 @@ class _Kind:
         d = self.db[self.db[self.ec_col] == ec].sort_values(self.pic_col, ascending=False)
         return None if d.empty else d.iloc[0]
 
-    def predict(self, age, bmi, fbg):
+    def predict(self, age, bmi, fbg, abundances):
+        """abundances: the user's 20 species values (percent), in core.microbiome.SPECIES order."""
+        a = np.asarray(abundances, float)
+        if a.shape != (len(SPECIES),):
+            raise ValueError(f"expected {len(SPECIES)} abundances, got shape {a.shape}")
         q = np.array([age, bmi, fbg], float)
-        zq = (q - self.c_mu) / self.c_sd
-        zr = (self.clin - self.c_mu) / self.c_sd
-        j = int(np.argmin(np.sqrt(((zr - zq) ** 2).sum(axis=1))))
-        x = np.concatenate([q, _clr(self.mic[j])]).reshape(1, -1)
+        x = np.concatenate([q, _clr(a)]).reshape(1, -1)
+        assert x.shape[1] == self.model.n_features_in_, "feature dimension mismatch"
         probs = np.zeros(len(self.targets))
         probs[self.model.classes_] = self.model.predict_proba(x)[0]
         order = np.argsort(-probs)[:TOP_K]
@@ -125,12 +132,23 @@ _PHYTO = _Kind("fbg_input_phyto.xlsx", "EC_Phytochemical_pIC50_12_rows_t2d.xlsx"
 _FOOD = _Kind("fbg_input_food.xlsx", "IC50_Matches_food.xlsx", "food")
 
 
-def recommend_all(age, height_cm, weight_kg, fbg):
+def _file_hash(name):
+    with open(_data_path(name), "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()[:12]
+
+
+MODEL_VERSION = "xgb-clr1e-3-" + "-".join(
+    _file_hash(n) for n in ("fbg_input_phyto.xlsx", "fbg_input_food.xlsx"))
+
+
+def recommend_from_microbiome(age, height_cm, weight_kg, fbg, abundances):
+    """Run both models on the user's own microbiome sample."""
     bmi = weight_kg / ((height_cm / 100.0) ** 2)
     return {
         "bmi": round(bmi, 1),
         "bmi_category": bmi_category(bmi),
         "fbg_category": fbg_category(fbg),
-        "phyto": _PHYTO.predict(age, bmi, fbg),
-        "food": _FOOD.predict(age, bmi, fbg),
+        "phyto": _PHYTO.predict(age, bmi, fbg, abundances),
+        "food": _FOOD.predict(age, bmi, fbg, abundances),
+        "model_version": MODEL_VERSION,
     }

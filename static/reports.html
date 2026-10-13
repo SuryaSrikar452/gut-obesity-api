@@ -1,0 +1,58 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reports</title><script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script></head><body>
+<div id="login" hidden></div>
+<div id="main" hidden><div id="nav"></div><main>
+ <h1>Reports</h1>
+ <div class="card"><button id="exp">Export all (CSV)</button> <button class="sec" id="reload">Refresh</button> <span id="msg" class="muted"></span></div>
+ <div class="card" id="list">Loading...</div>
+ <div class="card" id="detail" hidden></div>
+</main></div>
+<script src="/static/common.js"></script>
+<script>
+$('#nav').innerHTML = navBar('/dashboard/reports');
+async function download(path, name) {   // authenticated download via fetch -> blob
+  $('#msg').textContent = 'Downloading...';
+  try { const r = await api(path, { raw: true }); if (!r.ok) throw { message: 'Download failed (' + r.status + ')' };
+    const u = URL.createObjectURL(await r.blob()); const a = document.createElement('a'); a.href = u; a.download = name; a.click(); URL.revokeObjectURL(u); $('#msg').textContent = ''; }
+  catch (e) { $('#msg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
+}
+async function load() {
+  $('#list').textContent = 'Loading...';
+  try { const it = (await api('/reports')).items;
+    if (!it.length) { $('#list').innerHTML = '<p class="muted">No reports yet. Start from the Analyze page.</p>'; return; }
+    $('#list').innerHTML = '<table><tr><th>Report</th><th>Date</th><th>Glucose</th><th>Status</th><th></th></tr>' + it.map(r => `<tr>
+     <td>${esc(r.id.slice(0, 8))}</td><td>${fmtTime(r.created_at)}</td><td>${esc(r.glucose.value)} ${esc(r.glucose.unit)}</td>
+     <td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>
+     <td><button class="sec" data-o="${esc(r.id)}">Open</button>${r.status === 'completed' ? `<button data-p="${esc(r.id)}">PDF</button><button class="sec" data-c="${esc(r.id)}">CSV</button><button class="sec" data-q="${esc(r.id)}">QR</button>` : ''}</td></tr>`).join('') + '</table>';
+    document.querySelectorAll('[data-o]').forEach(b => b.onclick = () => open_(b.dataset.o));
+    document.querySelectorAll('[data-p]').forEach(b => b.onclick = () => download('/reports/' + b.dataset.p + '/pdf', 'gut-report-' + b.dataset.p.slice(0, 8) + '.pdf'));
+    document.querySelectorAll('[data-c]').forEach(b => b.onclick = () => download('/reports/' + b.dataset.c + '/csv', 'gut-report-' + b.dataset.c.slice(0, 8) + '.csv'));
+    document.querySelectorAll('[data-q]').forEach(b => b.onclick = () => qr(b.dataset.q));
+  } catch (e) { $('#list').innerHTML = '<p class="err">' + esc(e.message) + '</p>'; }
+}
+function recTable(items) {
+  if (!items || !items.length) return '<p class="muted">No predictions.</p>';
+  return '<table><tr><th>#</th><th>Enzyme</th><th>Score</th><th>Compound</th><th>pIC50</th><th>Sources</th></tr>' + items.map((x, i) =>
+    `<tr><td>${i + 1}</td><td>${esc(x.enzyme_name || '')} (${esc(x.enzyme)})</td><td>${esc(x.prob)}%</td><td>${esc(x.compound || '-')}</td><td>${esc(x.pic50 ?? '-')}</td><td>${esc((x.sources || []).join(', '))}</td></tr>`).join('') + '</table>';
+}
+async function open_(id) {
+  const d = $('#detail'); d.hidden = false; d.textContent = 'Loading...';
+  try { const r = await api('/reports/' + encodeURIComponent(id)); const g = r.glucose;
+    d.innerHTML = `<h3>Report ${esc(r.id)}</h3><p>${fmtTime(r.created_at)} - glucose ${esc(g.value)} ${esc(g.unit)} (${esc(g.source)}, measured ${fmtTime(g.measured_at)}, fasting: ${g.fasting === true ? 'yes' : g.fasting === false ? 'no' : 'unknown'})<br>Sample: ${esc(r.sample_id || '-')} - model ${esc(r.model_version)}</p>
+     ${r.status !== 'completed' ? '<p class="err">' + esc(r.error || r.status) + '</p>' : '<h4>Phytochemicals</h4>' + recTable(r.results.phyto) + '<h4>Food</h4>' + recTable(r.results.food)}
+     <p class="warn">Research use only: model predictions, not validated outcomes or medical advice.</p><div id="qrbox"></div>`;
+    d.scrollIntoView();
+  } catch (e) { d.innerHTML = '<p class="err">' + esc(e.message) + '</p>'; }
+}
+async function qr(id) {
+  await open_(id); const box = $('#qrbox'); box.textContent = 'Creating secure link...';
+  try { const r = await api('/reports/' + id + '/download-link', { method: 'POST' });
+    box.innerHTML = '<p>Scan with your phone camera to download the PDF. Expires <b id="cd"></b>.</p><div id="qrc"></div>';
+    new QRCode($('#qrc'), { text: r.url, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.L });
+    const end = Date.parse(r.expires_at); const t = setInterval(() => { const s = Math.round((end - Date.now()) / 1000);
+      if (s <= 0) { clearInterval(t); box.innerHTML = '<p class="err">QR expired.</p><button id="again">Generate new QR</button>'; $('#again').onclick = () => qr(id); } else $('#cd').textContent = 'in ' + s + 's'; }, 1000);
+  } catch (e) { box.innerHTML = '<p class="err">' + esc(e.message) + '</p>'; }
+}
+$('#exp').onclick = () => download('/reports/export.csv', 'gut-reports.csv'); $('#reload').onclick = load;
+requireLogin(async () => { await load(); const o = new URLSearchParams(location.search).get('open'); if (o) open_(o); });
+</script></body></html>
