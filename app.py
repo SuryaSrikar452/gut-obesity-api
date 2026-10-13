@@ -1,4 +1,4 @@
-import os, io, time, secrets, hashlib, requests, uuid
+import os, io, time, base64, secrets, hashlib, requests, uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, Request, Header, Depends, HTTPException, Query
@@ -705,6 +705,55 @@ async def upload_csv_analyze(code: str, file: UploadFile = File(...), sample_id:
     sb.table("users").update({"upload_code_hash": None, "upload_code_expires_at": None,
                               "upload_reading_id": None}).eq("id", user["id"]).execute()  # one successful use
     return {"status": "ok", "report_id": rid, "warnings": warnings}
+
+
+def send_report_email(to_email: str, pdf: bytes, filename: str):
+    resp = requests.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json"},
+        json={
+            "sender": {"email": SENDER_EMAIL, "name": "Gut Health Analyzer"},
+            "to": [{"email": to_email}],
+            "subject": "Your Gut Health Analyzer report (PDF)",
+            "textContent": "Your Gut Health Analyzer report is attached as a PDF.\n\n"
+                           "Research use only. Not a medical diagnosis.",
+            "attachment": [{"name": filename, "content": base64.b64encode(pdf).decode()}],
+        },
+        timeout=30,
+    )
+    if resp.status_code >= 400:
+        print(f"[Brevo ERROR] status={resp.status_code} body={resp.text}")
+    resp.raise_for_status()
+
+
+def _mask_email(e: str) -> str:
+    name, _, dom = e.partition("@")
+    return (name[:1] + "***@" + dom) if dom else "your registered email"
+
+
+@app.post("/device/email-report")
+async def device_email_report(device_id: str = Form(...), report_id: str = Form(...)):
+    """Device button: e-mail the PDF of one of THIS user's completed reports to their registered address."""
+    u = _claimed_user_by_device(device_id, "id,email")
+    if not u:
+        return JSONResponse(status_code=403, content={"error": "Device not recognized."})
+    if not _valid_uuid(report_id):
+        return JSONResponse(status_code=404, content={"error": "Report not found."})
+    r = sb.table("analysis_reports").select("*").eq("id", report_id).eq("user_id", u["id"]).execute()
+    if not r.data:
+        return JSONResponse(status_code=404, content={"error": "Report not found."})
+    row = r.data[0]
+    if row["status"] != "completed":
+        return JSONResponse(status_code=409, content={"error": "Report is not completed yet."})
+    if not check_rate_limit("em:" + str(u["id"])):
+        return JSONResponse(status_code=429, content={"error": "Too many emails. Wait a few minutes."})
+    try:
+        pdf = await run_in_threadpool(lambda: report_to_pdf(_report_out(row)))
+        await run_in_threadpool(send_report_email, u["email"], pdf, f"gut-report-{row['id'][:8]}.pdf")
+    except Exception as e:
+        print(f"[email-report {report_id}] failed: {type(e).__name__}")
+        return JSONResponse(status_code=500, content={"error": "Could not send the report email. Try again."})
+    return {"status": "ok", "sent_to": _mask_email(u["email"])}
 
 
 def _page(name):
