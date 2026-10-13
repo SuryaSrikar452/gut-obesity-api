@@ -532,12 +532,45 @@ def device_latest_report(device_id: str):
         return {"status": "empty"}
     row = r.data[0]
     res = row.get("results") or {}
-    return {"status": "ok", "report_status": row["status"], "report_id": row["id"],
-            "created_at": row["created_at"], "glucose": row["glucose_value"],
-            "phyto": [{"compound": x.get("compound"), "enzyme": x.get("enzyme"), "prob": x.get("prob")}
-                      for x in (res.get("phyto") or [])[:5]],
-            "food": [{"compound": x.get("compound"), "enzyme": x.get("enzyme"), "prob": x.get("prob")}
-                     for x in (res.get("food") or [])[:5]]}
+
+    def _food_label(x):
+        sources = x.get("sources") or []
+        if isinstance(sources, list) and sources:
+            return ", ".join(sources)
+        return x.get("food_name") or x.get("compound") or ""
+
+    def _phyto_source(x):
+        sources = x.get("sources") or []
+        if isinstance(sources, list) and sources:
+            return ", ".join(sources)
+        return x.get("plant") or ""
+
+    return {
+        "status": "ok",
+        "report_status": row["status"],
+        "report_id": row["id"],
+        "created_at": row["created_at"],
+        "glucose": row["glucose_value"],
+        "phyto": [
+            {
+                "compound": x.get("compound"),
+                "enzyme": x.get("enzyme"),
+                "prob": x.get("prob"),
+                "plant": _phyto_source(x),
+            }
+            for x in (res.get("phyto") or [])[:5]
+        ],
+        "food": [
+            {
+                "food_name": _food_label(x),
+                "compound": x.get("compound"),
+                "enzyme": x.get("enzyme"),
+                "prob": x.get("prob"),
+            }
+            for x in (res.get("food") or [])[:5]
+        ],
+    }
+
 
 
 # ============================================================
