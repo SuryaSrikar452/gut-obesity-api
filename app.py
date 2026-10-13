@@ -535,18 +535,176 @@ def device_latest_report(device_id: str):
     return {"status": "ok", "report_status": row["status"], "report_id": row["id"],
             "created_at": row["created_at"], "glucose": row["glucose_value"],
             "phyto": [{"compound": x.get("compound"), "enzyme": x.get("enzyme"), "prob": x.get("prob")}
-                      for x in (res.get("phyto") or [])[:3]],
+                      for x in (res.get("phyto") or [])[:5]],
             "food": [{"compound": x.get("compound"), "enzyme": x.get("enzyme"), "prob": x.get("prob")}
-                     for x in (res.get("food") or [])[:3]]}
+                     for x in (res.get("food") or [])[:5]]}
+
+
+# ============================================================
+# Device profile (age / height / weight entered on the device)
+# ============================================================
+def _claimed_user_by_device(device_id: str, cols: str = "id"):
+    r = sb.table("users").select(cols).eq("device_id", device_id).eq("claimed", True).execute()
+    return r.data[0] if r.data else None
+
+
+@app.post("/device/profile")
+async def device_set_profile(device_id: str = Form(...), age: int = Form(..., ge=1, le=120),
+                             height_cm: int = Form(..., ge=100, le=250),
+                             weight_kg: int = Form(..., ge=20, le=300)):
+    u = _claimed_user_by_device(device_id)
+    if not u:
+        return JSONResponse(status_code=403, content={"error": "Device not recognized."})
+    sb.table("users").update({"age": age, "height_cm": height_cm, "weight_kg": weight_kg}).eq("id", u["id"]).execute()
+    return {"status": "ok"}
+
+
+@app.get("/device/profile")
+def device_get_profile(device_id: str):
+    u = _claimed_user_by_device(device_id, "id,age,height_cm,weight_kg")
+    if not u:
+        return JSONResponse(status_code=403, content={"error": "Device not recognized."})
+    if not (u.get("age") and u.get("height_cm") and u.get("weight_kg")):
+        return {"status": "empty"}
+    return {"status": "ok", "age": u["age"], "height_cm": u["height_cm"], "weight_kg": u["weight_kg"]}
+
+
+@app.get("/device/latest-glucose")
+def device_latest_glucose(device_id: str):
+    """Newest saved reading, for the 'Use Latest' button on the device."""
+    u = _claimed_user_by_device(device_id)
+    if not u:
+        return JSONResponse(status_code=403, content={"error": "Device not recognized."})
+    r = (sb.table("glucose_readings").select("*").eq("user_id", u["id"])
+         .order("measured_at", desc=True).limit(1).execute())
+    if not r.data:
+        return {"status": "empty"}
+    return dict(_glucose_out(r.data[0]), status="ok")
+
+
+@app.post("/device/logout")
+@app.post("/device/unclaim")
+async def device_logout(device_id: str = Form(...)):
+    """Unlinks this device from its user account so a new user can link it."""
+    sb.table("users").update({
+        "claimed": False,
+        "device_id": None,
+        "upload_code_hash": None,
+        "upload_code_expires_at": None,
+        "upload_reading_id": None,
+        "upload_source": None
+    }).eq("device_id", device_id).execute()
+    return {"status": "ok", "message": "Device unlinked successfully."}
+
+
+
+# ============================================================
+# QR upload: the device asks for a short-lived link bound to ONE glucose reading.
+# The phone opens /u/{code} (no login), uploads the CSV, and the server runs both models with
+# the stored profile + that reading. The code is stored hashed and is cleared after a success.
+# ============================================================
+UPLOAD_CODE_TTL = 900  # 15 minutes
 
 
 @app.post("/upload-session")
-async def create_upload_session(request: Request, device_id: str = Form(...)):
-    """Kept for firmware compatibility: the QR now simply opens the web app login."""
-    r = sb.table("users").select("id").eq("device_id", device_id).eq("claimed", True).execute()
-    if not r.data:
+async def create_upload_session(request: Request, device_id: str = Form(...),
+                                glucose_reading_id: Optional[str] = Form(None),
+                                glucose_source: str = Form("new_test")):
+    u = _claimed_user_by_device(device_id, "id,age,height_cm,weight_kg")
+    if not u:
         return JSONResponse(status_code=403, content={"error": "Device not recognized."})
-    return {"status": "ok", "upload_url": f"{_public_base(request)}/app", "device_code": "", "ttl_seconds": 0}
+    if not glucose_reading_id:  # old firmware: fall back to the web app login
+        return {"status": "ok", "upload_url": f"{_public_base(request)}/app", "device_code": "", "ttl_seconds": 0}
+    if glucose_source not in ("previous", "new_test"):
+        return JSONResponse(status_code=400, content={"error": "Invalid glucose source."})
+    if not (u.get("age") and u.get("height_cm") and u.get("weight_kg")):
+        return JSONResponse(status_code=409, content={"error": "Profile missing. Open Edit Profile on the device."})
+    if not _valid_uuid(glucose_reading_id) or not sb.table("glucose_readings").select("id") \
+            .eq("id", glucose_reading_id).eq("user_id", u["id"]).execute().data:
+        return JSONResponse(status_code=404, content={"error": "Glucose reading not found."})
+    code = secrets.token_urlsafe(12)  # 16 chars: keeps the QR small
+    sb.table("users").update({
+        "upload_code_hash": _h(code),
+        "upload_code_expires_at": (datetime.now(timezone.utc) + timedelta(seconds=UPLOAD_CODE_TTL)).isoformat(),
+        "upload_reading_id": glucose_reading_id, "upload_source": glucose_source}).eq("id", u["id"]).execute()
+    return {"status": "ok", "upload_url": f"{_public_base(request)}/u/{code}", "ttl_seconds": UPLOAD_CODE_TTL}
+
+
+def _upload_user(code: str) -> dict:
+    r = (sb.table("users").select("id,email,device_id,claimed,age,height_cm,weight_kg,"
+                                  "upload_reading_id,upload_source,upload_code_expires_at")
+         .eq("upload_code_hash", _h(code)).eq("claimed", True).execute())
+    row = r.data[0] if r.data else None
+    exp = (row or {}).get("upload_code_expires_at")
+    if not row or not exp or datetime.fromisoformat(exp) < datetime.now(timezone.utc):
+        raise HTTPException(410, "This upload link has expired. Open a new QR code on the device.")
+    return row
+
+
+UPLOAD_CSV_PAGE = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Gut Health - Upload CSV</title>
+<style>:root{--p:#2E7D32;--bg:#F7FBF8;--t:#1B2E1D;--s:#5B6E5D}*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg);color:var(--t);font-family:system-ui,sans-serif}
+.c{background:#fff;border:1px solid rgba(46,125,50,.15);border-radius:16px;padding:24px;max-width:420px;width:100%}
+h1{font-size:20px;margin:0 0 6px;color:var(--p)}p{color:var(--s);margin:0 0 16px;font-size:14px}
+input,select,button{width:100%;font-size:16px;padding:12px;margin-top:10px;border-radius:10px;border:1px solid #cfe3d1;background:#fff}
+button{background:var(--p);color:#fff;border:0;font-weight:600}button:disabled{opacity:.5}
+#m{margin-top:14px;font-size:14px}.e{color:#c62828}.o{color:var(--p)}</style></head><body><div class="c">
+<h1>Upload microbiome CSV</h1>
+<p>Your glucose reading and profile are already on the device. Choose your CSV; the results will appear on the device screen.</p>
+<input type="file" id="f" accept=".csv,text/csv"><select id="s" hidden></select>
+<button id="b" disabled>Run analysis</button><div id="m"></div></div>
+<script>
+const f=document.getElementById('f'),s=document.getElementById('s'),b=document.getElementById('b'),m=document.getElementById('m');
+f.onchange=()=>{b.disabled=!f.files[0];s.hidden=true;m.textContent='';};
+b.onclick=async()=>{
+  b.disabled=true;m.className='';m.textContent='Analysing... this can take a few seconds.';
+  const fd=new FormData();fd.append('file',f.files[0]);if(!s.hidden&&s.value)fd.append('sample_id',s.value);
+  try{
+    const r=await fetch(location.pathname.replace(/\\/$/,'')+'/analyze',{method:'POST',body:fd});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok){m.className='o';m.textContent='Done. Your results are on the device screen.';return;}
+    const det=d.detail;
+    if(det&&det.sample_ids){s.innerHTML='';det.sample_ids.forEach(i=>{const o=document.createElement('option');o.value=o.textContent=i;s.appendChild(o);});
+      s.hidden=false;m.textContent=det.error+' Pick one and press Run again.';b.disabled=false;return;}
+    m.className='e';m.textContent=(det&&det.error)||(typeof det==='string'?det:'Upload failed.');
+    if(det&&det.details)m.textContent+=' '+det.details.slice(0,5).join('; ');
+    b.disabled=false;
+  }catch(e){m.className='e';m.textContent='Network error. Try again.';b.disabled=false;}
+};
+</script></body></html>"""
+
+
+@app.get("/u/{code}", response_class=HTMLResponse)
+def upload_csv_page(code: str):
+    try:
+        _upload_user(code)
+    except HTTPException as e:
+        return HTMLResponse(f"<p style='font-family:sans-serif;padding:24px'>{e.detail}</p>", status_code=410)
+    return UPLOAD_CSV_PAGE
+
+
+@app.post("/u/{code}/analyze", status_code=201)
+async def upload_csv_analyze(code: str, file: UploadFile = File(...), sample_id: Optional[str] = Form(None)):
+    user = _upload_user(code)
+    if not check_rate_limit("up:" + str(user["id"])):
+        raise HTTPException(429, "Too many analyses. Wait a few minutes.")
+    rd = (sb.table("glucose_readings").select("*").eq("id", user["upload_reading_id"])
+          .eq("user_id", user["id"]).execute())
+    if not rd.data:
+        raise HTTPException(404, "Glucose reading not found. Open a new QR code on the device.")
+    raw = await file.read(2 * 1024 * 1024 + 1)
+    if len(raw) > 2 * 1024 * 1024:
+        raise HTTPException(413, "CSV is larger than 2 MB.")
+    try:
+        rid, warnings = await run_in_threadpool(
+            _run_analysis, user, rd.data[0], user.get("upload_source") or "new_test",
+            user["age"], user["height_cm"], user["weight_kg"], raw, sample_id, None)
+    except CsvValidationError as e:
+        raise HTTPException(400, detail={"error": str(e), "details": e.details})
+    sb.table("users").update({"upload_code_hash": None, "upload_code_expires_at": None,
+                              "upload_reading_id": None}).eq("id", user["id"]).execute()  # one successful use
+    return {"status": "ok", "report_id": rid, "warnings": warnings}
 
 
 def _page(name):

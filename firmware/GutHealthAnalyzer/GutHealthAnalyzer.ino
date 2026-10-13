@@ -1,14 +1,19 @@
 // ============================================================
-// GUT HEALTH ANALYZER  -  UI v3
+// GUT HEALTH ANALYZER  -  UI v4
 // ESP32 + ILI9481 TFT + XPT2046 Touch + ADS1115
-// Password login, glucose test (+fasting question), QR to web app, result summary
 //
-// v3 changes vs v2:
-//  - REMOVED the gut-risk pipeline (risk %, top microbes, dashboard tiles, /latest, /dashboard-data)
-//  - Glucose readings are POSTed to /device/glucose (idempotent via client_ref)
-//  - The QR now opens the web app (/app): login, pick glucose, upload CSV, reports, PDF
-//  - The device shows a short "Analysis Ready" summary from /device/latest-report
-//  - The device Key is no longer printed on the QR screen (it is a credential); see Serial
+// WORKFLOW
+//  First boot : registered email -> emailed OTP (links this device to the user)
+//               -> profile (age, height, weight) -> glucose test page
+//  Later boots: straight to the glucose test page (Edit Profile is bottom-left)
+//  Glucose page: [Start Test] new measurement (+fasting question)  or  [Use Latest] saved reading
+//  Then       : QR code -> phone uploads the microbiome CSV (no login on the phone)
+//               glucose + profile + CSV are fed to both models
+//  Results    : dashboard with two choices (Phytochemicals / Food) -> list -> Back to glucose test
+//
+// Needs the matching backend changes (app.py + migration.sql):
+//   POST /device/profile, GET /device/profile, GET /device/latest-glucose,
+//   POST /upload-session (now takes glucose_reading_id), GET /u/{code}, POST /u/{code}/analyze
 // Libraries: WiFiManager (tzapu), ArduinoJson v6, LovyanGFX, Adafruit_ADS1X15,
 //            Wire, Preferences, HTTPClient, qrcode.h + qrcode.c in the sketch folder
 // ============================================================
@@ -133,11 +138,34 @@ String lastReportId = "";
 String lastReadingRef = "";           // idempotency key for the glucose POST (reused on retry)
 unsigned long lastPoll = 0;
 const unsigned long POLL_INTERVAL_MS = 3000;
-bool onQRScreenNow = false;
-bool resultShown = false;             // true while the "Analysis Ready" screen is up
 float lastGlucoseValue = -1.0f;
 bool lastGlucoseValid = false;
 int lastSessionHttpCode = 0;
+String lastResp = "";                 // body of the last glucose POST
+
+// Profile (kept on the device and synced to the server)
+int pAge = 0, pHgt = 0, pWgt = 0;
+
+// Glucose reading that will be analysed (set after a new test or "Use Latest")
+String curReadingId = "";
+float curReadingValue = 0;
+String curSource = "new_test";        // "new_test" | "previous"
+
+// Latest saved reading on the server (for the "Use Latest" button)
+String latestId = "";
+float latestValue = 0;
+int latestFasting = -1;               // -1 unknown, 0 no, 1 yes
+
+// Which screen the main loop is serving (other screens are blocking flows)
+enum Screen { SC_HOME, SC_QR, SC_FAILED };
+Screen screen = SC_HOME;
+String qrError = "";
+
+// Model output shown on the dashboard (top 5 each)
+struct ResItem { char compound[48]; char enzyme[24]; float prob; };
+ResItem resPhyto[5];
+ResItem resFood[5];
+int nPhyto = 0, nFood = 0;
 
 // ============================================================
 // ADS1115 / GLUCOSE SENSOR (unchanged)
@@ -365,8 +393,12 @@ String capturePassword(const char* title, const char* subtitle) {
 }
 
 // ============================================================
-// API KEY / SETUP / LOGIN (unchanged)
+// API KEY (+ optional device password)
 // ============================================================
+// 0 = no password: after the first setup the device goes straight to the glucose page.
+// 1 = also ask for a device password at every boot (created on first boot).
+#define USE_DEVICE_PASSWORD 0
+
 String generateApiKey() {
   const char* charset = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   String key = "GUT-";
@@ -374,6 +406,16 @@ String generateApiKey() {
   return key;
 }
 
+void ensureApiKey() {
+  API_KEY = prefs.getString("apikey", "");
+  if (API_KEY.length() == 0) {
+    API_KEY = generateApiKey();
+    prefs.putString("apikey", API_KEY);
+    Serial.println("New device key created: " + API_KEY);
+  }
+}
+
+#if USE_DEVICE_PASSWORD
 void runSetupWizard() {
   String pw1 = capturePassword("Gut Health Analyzer", "Create a device password");
   String pw2 = capturePassword("Gut Health Analyzer", "Re-enter to confirm");
@@ -383,46 +425,41 @@ void runSetupWizard() {
     pw1 = capturePassword("Gut Health Analyzer", "Create a device password");
     pw2 = capturePassword("Gut Health Analyzer", "Re-enter to confirm");
   }
-  API_KEY = generateApiKey();
   prefs.putString("pw", pw1);
-  prefs.putString("apikey", API_KEY);
-  prefs.putBool("setup_done", true);
-  Serial.println("Setup complete. API key: " + API_KEY);
 }
 
 void runLoginGate() {
   String correctPw = prefs.getString("pw", "");
   if (correctPw.length() == 0) {
-    prefs.putBool("setup_done", false);
     runSetupWizard();
     correctPw = prefs.getString("pw", "");
   }
   while (true) {
     String attempt = capturePassword("Gut Health Analyzer", "Enter device password");
-    if (attempt.length() == correctPw.length() && attempt.equals(correctPw)) {
-      Serial.println("Password accepted.");
-      return;
-    }
-    Serial.println("Password rejected.");
+    if (attempt.equals(correctPw)) return;
     drawPasswordScreen("Gut Health Analyzer", "Incorrect password", "", true);
     delay(900);
   }
 }
+#endif
 
 // ============================================================
-// GLUCOSE BUTTON (unchanged)
+// SMALL UI HELPERS
 // ============================================================
-void drawGlucoseButton() {
-  display.fillRoundRect(GLUCOSE_BTN_X, GLUCOSE_BTN_Y, GLUCOSE_BTN_W, GLUCOSE_BTN_H, 15, COL_WHITE);
-  drawDrop(GLUCOSE_BTN_X + 22, GLUCOSE_BTN_Y + 10, 6, COL_RED);
-  T("Glucose Test", GLUCOSE_BTN_X + 38, GLUCOSE_BTN_Y + GLUCOSE_BTN_H / 2, F_BODYB,
-    COL_PRIMARY_DARK, COL_WHITE, AL_L);
+bool inRect(int tx, int ty, int x, int y, int w, int h) {
+  const int pad = 4;
+  return tx >= x - pad && tx <= x + w + pad && ty >= y - pad && ty <= y + h + pad;
 }
 
-bool hitGlucoseButton(int tx, int ty) {
-  const int pad = 6;
-  return tx >= GLUCOSE_BTN_X - pad && tx <= GLUCOSE_BTN_X + GLUCOSE_BTN_W + pad &&
-         ty >= GLUCOSE_BTN_Y - pad && ty <= GLUCOSE_BTN_Y + GLUCOSE_BTN_H + pad;
+void drawPill(int x, int y, int w, int h, const char* label, uint16_t fill, uint16_t fg, uint16_t border) {
+  display.fillRoundRect(x, y + 3, w, h, h / 2, COL_SHADOW);
+  display.fillRoundRect(x, y, w, h, h / 2, fill);
+  display.drawRoundRect(x, y, w, h, h / 2, border);
+  T(label, x + w / 2, y + h / 2, F_BODYB, fg, fill, AL_C);
+}
+
+void waitTap(int &tx, int &ty) {
+  while (!readTouch(tx, ty)) delay(30);
 }
 
 // ============================================================
@@ -448,6 +485,20 @@ int postForm(const String& path, const String& body, String& resp) {
   resp = (code > 0) ? http.getString() : String("");
   http.end();
   Serial.printf("%s -> HTTP %d\n", path.c_str(), code);
+  return code;
+}
+
+int getJson(const String& path, JsonDocument& doc, uint16_t timeoutMs) {
+  HTTPClient http;
+  http.setTimeout(timeoutMs);
+  http.begin(String(CLOUD_HOST) + path);
+  int code = http.GET();
+  if (code == 200) {
+    if (deserializeJson(doc, http.getString()) != DeserializationError::Ok) code = -2;
+  }
+  http.end();
+  int q = path.indexOf('?');  // never print the device key
+  Serial.printf("GET %s -> HTTP %d\n", (q >= 0 ? path.substring(0, q) : path).c_str(), code);
   return code;
 }
 
@@ -499,8 +550,206 @@ void showBusy(const char* line) {
 }
 
 // ============================================================
-// QR SCREEN  (QR now opens the web app: login -> glucose -> CSV -> reports)
+// PROFILE (age / height / weight): stored on the device, synced to the server
 // ============================================================
+void loadProfile() {
+  pAge = prefs.getInt("age", 0);
+  pHgt = prefs.getInt("hgt", 0);
+  pWgt = prefs.getInt("wgt", 0);
+}
+
+bool profileComplete() { return pAge > 0 && pHgt > 0 && pWgt > 0; }
+
+void saveProfileLocal() {
+  prefs.putInt("age", pAge);
+  prefs.putInt("hgt", pHgt);
+  prefs.putInt("wgt", pWgt);
+}
+
+bool syncProfile() {
+  String body = "device_id=" + API_KEY + "&age=" + String(pAge) + "&height_cm=" + String(pHgt) +
+                "&weight_kg=" + String(pWgt);
+  String resp;
+  int code = postForm("/device/profile", body, resp);
+  bool ok = (code == 200);
+  prefs.putBool("psync", ok);
+  return ok;
+}
+
+// Used after re-linking / reinstall: the server may already hold this user's profile.
+bool fetchProfileFromServer() {
+  StaticJsonDocument<256> d;
+  int code = getJson("/device/profile?device_id=" + API_KEY, d, 30000);
+  if (code == 200 && d["status"] == "ok") {
+    pAge = d["age"] | 0;
+    pHgt = d["height_cm"] | 0;
+    pWgt = d["weight_kg"] | 0;
+    if (profileComplete()) {
+      saveProfileLocal();
+      prefs.putBool("psync", true);
+      return true;
+    }
+  }
+  pAge = pHgt = pWgt = 0;
+  return false;
+}
+
+void drawNumberField(const String& e, const char* unit, bool error) {
+  display.fillRect(100, 72, 280, 36, COL_BG);
+  display.fillRoundRect(110, 76, 260, 28, 14, COL_WHITE);
+  display.drawRoundRect(110, 76, 260, 28, 14, error ? COL_RED : COL_BORDER);
+  String s = e.length() ? e : String("--");
+  s += " ";
+  s += unit;
+  T(s.c_str(), 240, 90, F_TITLE, error ? COL_RED : COL_PRIMARY_DARK, COL_WHITE, AL_C);
+}
+
+void drawNumberSubtitle(const char* text, bool error) {
+  display.fillRect(0, 52, 480, 20, COL_BG);
+  T(text, 240, 62, F_BODY, error ? COL_RED : COL_TEXT_SOFT, COL_BG, AL_C);
+}
+
+int captureNumber(const char* title, const char* subtitle, const char* unit, int initial, int minV, int maxV) {
+  String entered = initial > 0 ? String(initial) : String("");
+  int maxLen = String(maxV).length();
+  drawHeader(title);
+  layoutKeypad();
+  drawKeypad();
+  drawNumberSubtitle(subtitle, false);
+  drawNumberField(entered, unit, false);
+  while (true) {
+    String key = waitForKeyTap();
+    if (key == "<-") {
+      if (entered.length() > 0) entered.remove(entered.length() - 1);
+    } else if (key == "OK") {
+      if (entered.length() > 0) {
+        int v = entered.toInt();
+        if (v >= minV && v <= maxV) return v;
+        char m[48];
+        snprintf(m, sizeof(m), "Enter %d to %d %s", minV, maxV, unit);
+        drawNumberSubtitle(m, true);
+        drawNumberField(entered, unit, true);
+        continue;
+      }
+    } else if (!(entered.length() == 0 && key == "0") && (int)entered.length() < maxLen) {
+      entered += key;
+    }
+    drawNumberSubtitle(subtitle, false);
+    drawNumberField(entered, unit, false);
+  }
+}
+
+// Three screens: age, height, weight. Current values are pre-filled when editing.
+void runProfileEntry(const char* heading) {
+  pAge = captureNumber(heading, "Your age", "years", pAge, 1, 120);
+  pHgt = captureNumber(heading, "Your height", "cm", pHgt, 100, 250);
+  pWgt = captureNumber(heading, "Your weight", "kg", pWgt, 20, 300);
+  saveProfileLocal();
+  showBusy("Saving profile...");
+  if (!syncProfile())
+    showMessage("Saved on device", "Could not reach the server. Your profile will be sent later.", "Tap to continue");
+}
+
+void profileScreen() {
+  drawHeader("My Profile");
+  drawCard(20, 60, 440, 150);
+  char b[24];
+  T("Age", 44, 92, F_BODY, COL_TEXT_SOFT, COL_WHITE);
+  snprintf(b, sizeof(b), "%d years", pAge);
+  T(b, 436, 92, F_TITLE, COL_TEXT, COL_WHITE, AL_R);
+  T("Height", 44, 135, F_BODY, COL_TEXT_SOFT, COL_WHITE);
+  snprintf(b, sizeof(b), "%d cm", pHgt);
+  T(b, 436, 135, F_TITLE, COL_TEXT, COL_WHITE, AL_R);
+  T("Weight", 44, 178, F_BODY, COL_TEXT_SOFT, COL_WHITE);
+  snprintf(b, sizeof(b), "%d kg", pWgt);
+  T(b, 436, 178, F_TITLE, COL_TEXT, COL_WHITE, AL_R);
+  drawPill(40, 232, 180, 46, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+  drawPill(260, 232, 180, 46, "Edit values", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
+  waitTouchRelease();
+  while (true) {
+    int tx, ty;
+    waitTap(tx, ty);
+    if (inRect(tx, ty, 40, 232, 180, 46)) { waitTouchRelease(); return; }
+    if (inRect(tx, ty, 260, 232, 180, 46)) {
+      waitTouchRelease();
+      runProfileEntry("Edit profile");
+      return;
+    }
+  }
+}
+
+// ============================================================
+// GLUCOSE HOME PAGE (the page the device lands on after the first setup)
+// ============================================================
+const int HB_START_X = 20, HB_LAST_X = 250, HB_Y = 216, HB_W = 210, HB_H = 46;
+const int HB_EDIT_X = 12, HB_EDIT_Y = 276, HB_EDIT_W = 140, HB_EDIT_H = 34;
+const int HB_LOGOUT_X = 328, HB_LOGOUT_Y = 276, HB_LOGOUT_W = 140, HB_LOGOUT_H = 34;
+void runLogoutFlow();
+
+void fetchLatestGlucose() {
+  latestId = "";
+  StaticJsonDocument<384> d;
+  int code = getJson("/device/latest-glucose?device_id=" + API_KEY, d, 12000);
+  if (code == 200 && d["status"] == "ok" && d["id"].is<const char*>()) {
+    latestId = d["id"].as<String>();
+    latestValue = d["value"] | 0.0f;
+    latestFasting = d["fasting"].isNull() ? -1 : (d["fasting"].as<bool>() ? 1 : 0);
+  }
+}
+
+void showHome(bool refresh) {
+  if (refresh) fetchLatestGlucose();
+  screen = SC_HOME;
+  drawHeader("Glucose Test");
+  drawCard(20, 58, 440, 144);
+  display.fillCircle(66, 104, 30, COL_ACCENT_SOFT);
+  display.drawCircle(66, 104, 30, COL_ACCENT);
+  drawDrop(66, 96, 12, COL_RED);
+  T("Ready for a new test", 112, 88, F_TITLE, COL_TEXT, COL_WHITE);
+  T(adsOk ? "Apply a drop of blood to the strip" : "Glucose sensor not found", 112, 118, F_BODY,
+    adsOk ? COL_TEXT_SOFT : COL_RED, COL_WHITE);
+  display.drawFastHLine(36, 146, 408, COL_BORDER);
+  char b[64];
+  if (latestId.length()) {
+    snprintf(b, sizeof(b), "Latest saved: %.0f mg/dL%s", latestValue,
+             latestFasting == 1 ? " (fasting)" : (latestFasting == 0 ? " (not fasting)" : ""));
+    T(b, 36, 174, F_BODYB, COL_PRIMARY_DARK, COL_WHITE);
+  } else {
+    T("No saved reading yet", 36, 174, F_BODY, COL_TEXT_SOFT, COL_WHITE);
+  }
+  if (adsOk) drawPill(HB_START_X, HB_Y, HB_W, HB_H, "Start Test", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
+  else       drawPill(HB_START_X, HB_Y, HB_W, HB_H, "Start Test", COL_BORDER, COL_TEXT_SOFT, COL_BORDER);
+  if (latestId.length()) drawPill(HB_LAST_X, HB_Y, HB_W, HB_H, "Use Latest", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+  else                   drawPill(HB_LAST_X, HB_Y, HB_W, HB_H, "Use Latest", COL_BORDER, COL_TEXT_SOFT, COL_BORDER);
+  drawPill(HB_EDIT_X, HB_EDIT_Y, HB_EDIT_W, HB_EDIT_H, "Edit Profile", COL_WHITE, COL_PRIMARY_DARK, COL_BORDER);
+  drawPill(HB_LOGOUT_X, HB_LOGOUT_Y, HB_LOGOUT_W, HB_LOGOUT_H, "Log Out", COL_WHITE, COL_RED, COL_BORDER);
+}
+
+void handleHomeTouch(int tx, int ty) {
+  if (adsOk && inRect(tx, ty, HB_START_X, HB_Y, HB_W, HB_H)) {
+    waitTouchRelease();
+    runGlucoseFlow();
+  } else if (latestId.length() && inRect(tx, ty, HB_LAST_X, HB_Y, HB_W, HB_H)) {
+    waitTouchRelease();
+    curReadingId = latestId;
+    curReadingValue = latestValue;
+    curSource = "previous";
+    showQRScreen();
+  } else if (inRect(tx, ty, HB_EDIT_X, HB_EDIT_Y, HB_EDIT_W, HB_EDIT_H)) {
+    waitTouchRelease();
+    profileScreen();
+    showHome(false);
+  } else if (inRect(tx, ty, HB_LOGOUT_X, HB_LOGOUT_Y, HB_LOGOUT_W, HB_LOGOUT_H)) {
+    waitTouchRelease();
+    runLogoutFlow();
+  }
+}
+
+// ============================================================
+// QR SCREEN: the phone opens a one-time upload page (no login) for the microbiome CSV
+// ============================================================
+const int QB_X = 12, QB_Y = 282, QB_W = 100, QB_H = 30;
+
 void drawQRStep(int cy, int n, const char* text) {
   display.fillCircle(260, cy, 13, COL_ACCENT_SOFT);
   display.drawCircle(260, cy, 13, COL_ACCENT);
@@ -510,23 +759,22 @@ void drawQRStep(int cy, int n, const char* text) {
   T(text, 284, cy, F_BODY, COL_TEXT, COL_WHITE, AL_L);
 }
 
-void drawQRFailed(int httpCodeHint) {
-  currentScreenReset();
+void drawQRFailed(const String& msg) {
+  screen = SC_FAILED;
   drawHeader("Gut Health");
   drawCard(20, 70, 440, 150);
-  T("Could not open the web app QR", 40, 105, F_BODYB, COL_RED, COL_WHITE);
-  T("Check Wi-Fi, and that this device", 40, 140, F_BODY, COL_TEXT, COL_WHITE);
-  T("is linked to your account.", 40, 165, F_BODY, COL_TEXT, COL_WHITE);
-  T("Tap anywhere to retry", 240, 262, F_BODYB, COL_PRIMARY, COL_BG, AL_C);
+  T("Could not open the upload QR", 40, 100, F_BODYB, COL_RED, COL_WHITE);
+  drawWrapped(msg, 40, 135, 400, 26, 3, COL_TEXT, COL_WHITE);
+  drawPill(40, 236, 180, 46, "Retry", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
+  drawPill(260, 236, 180, 46, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
 }
 
 void drawQRScreen(const String& url) {
   QRCode qr;
-  uint8_t buf[qrcode_getBufferSize(6)];  // v6 ECC_LOW holds 134 bytes; the /app URL is ~50
+  uint8_t buf[qrcode_getBufferSize(6)];  // v6 ECC_LOW holds 134 bytes; the upload URL is ~60
   int8_t qrRc = qrcode_initText(&qr, buf, 6, ECC_LOW, url.c_str());
-  if (qrRc < 0) { drawQRFailed(0); return; }
-  resultShown = false;
-  drawHeader("Gut Health");
+  if (qrRc < 0) { drawQRFailed("The link was too long for the QR code."); return; }
+  drawHeader("Upload microbiome CSV");
 
   int scale = 4;  // v6 = 41 modules * 4 = 164 px
   int qrPixels = qr.size * scale;
@@ -539,114 +787,169 @@ void drawQRScreen(const String& url) {
     for (uint8_t x = 0; x < qr.size; x++)
       if (qrcode_getModule(&qr, x, y))
         display.fillRect(qx + x * scale, qy + y * scale, scale, scale, COL_TEXT);
-
-  // (the device Key is intentionally NOT shown: it is a credential)
   T("Scan with your phone", cardX + cardW / 2, cardY + cardW + 22, F_BODYB, COL_PRIMARY, COL_BG, AL_C);
 
   drawCard(232, 58, 224, 227);
-  T("Open the web app", 248, 80, F_TITLE, COL_TEXT, COL_WHITE);
-  T("Log in with your email", 248, 106, F_BODY, COL_TEXT_SOFT, COL_WHITE);
+  T("Upload your CSV", 248, 80, F_TITLE, COL_TEXT, COL_WHITE);
+  T("No login needed", 248, 104, F_BODY, COL_TEXT_SOFT, COL_WHITE);
+  char g[40];
+  snprintf(g, sizeof(g), "Glucose used: %.0f mg/dL", curReadingValue);
+  T(g, 248, 124, F_TINY, COL_PRIMARY_DARK, COL_WHITE);
   display.drawFastVLine(260, 160, 12, COL_BORDER);
   display.drawFastVLine(260, 198, 12, COL_BORDER);
-  drawQRStep(146, 1, "Scan, log in");
-  drawQRStep(185, 2, "Pick glucose, upload CSV");
-  drawQRStep(224, 3, "Summary shows here");
+  drawQRStep(146, 1, "Scan the QR code");
+  drawQRStep(185, 2, "Choose the microbe CSV");
+  drawQRStep(224, 3, "Results show here");
   display.drawFastHLine(248, 245, 192, COL_BORDER);
   display.fillCircle(254, 265, 4, COL_ACCENT);
   T("Waiting for analysis", 266, 265, F_BODY, COL_TEXT_SOFT, COL_WHITE);
   drawFooter("Powered by AI - Gut Health");
-  if (adsOk) drawGlucoseButton();
-  onQRScreenNow = true;
+  drawPill(QB_X, QB_Y, QB_W, QB_H, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_BORDER);
+  screen = SC_QR;
+  lastPoll = millis();
 }
 
-void currentScreenReset() {
-  resultShown = false;
-  onQRScreenNow = false;  // loop(): tap anywhere to retry
-}
-
-// Ask the backend for the web-app URL (also confirms this device is linked: 403 otherwise).
-bool createUploadSession(String &url) {
-  HTTPClient http;
-  http.setTimeout(30000);
-  http.begin(String(CLOUD_HOST) + "/upload-session");
-  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  int httpCode = http.POST("device_id=" + API_KEY);
-  bool ok = false;
-  if (httpCode == 200) {
+// Asks the backend for a one-time upload link bound to the chosen glucose reading.
+bool createUploadSession(String &url, String &err) {
+  String body = "device_id=" + API_KEY + "&glucose_reading_id=" + curReadingId +
+                "&glucose_source=" + curSource;
+  String resp;
+  int code = postForm("/upload-session", body, resp);
+  lastSessionHttpCode = code;
+  if (code == 200) {
     StaticJsonDocument<512> doc;
-    if (deserializeJson(doc, http.getString()) == DeserializationError::Ok &&
-        doc["upload_url"].is<const char*>()) {
+    if (deserializeJson(doc, resp) == DeserializationError::Ok && doc["upload_url"].is<const char*>()) {
       url = doc["upload_url"].as<String>();
-      ok = true;
+      return true;
     }
   }
-  lastSessionHttpCode = httpCode;
-  Serial.printf("upload-session HTTP %d\n", httpCode);
-  http.end();
-  return ok;
+  err = errorFromResponse(resp, code);
+  return false;
 }
 
 void showQRScreen() {
-  String url;
-  bool ok = createUploadSession(url);
+  showBusy("Preparing upload link...");
+  if (!prefs.getBool("psync", false)) syncProfile();  // the server needs the profile for the models
+  pollLatest(true);  // remember the newest report so only a NEW analysis pops up
+  String url, err;
+  bool ok = createUploadSession(url, err);
   if (!ok && lastSessionHttpCode == 403) {
     // Server does not know this device as claimed (e.g. DB reset): link it again.
     prefs.putBool("claimed", false);
     runClaimWizard();
-    ok = createUploadSession(url);
+    syncProfile();
+    ok = createUploadSession(url, err);
   }
   if (ok) drawQRScreen(url);
-  else drawQRFailed(0);
+  else drawQRFailed(err);
 }
 
 // ============================================================
-// ANALYSIS SUMMARY (from /device/latest-report; no CSV or profile data)
+// RESULTS (from /device/latest-report: top predicted targets only)
 // ============================================================
-void drawReportSummary(JsonObject d) {
-  onQRScreenNow = false;
-  resultShown = true;
+int loadItems(JsonArray a, int which) {
+  ResItem* out = which ? resFood : resPhyto;
+  int n = 0;
+  for (JsonObject it : a) {
+    if (n >= 5) break;
+    strlcpy(out[n].compound, it["compound"] | "?", sizeof(out[n].compound));
+    strlcpy(out[n].enzyme, it["enzyme"] | "", sizeof(out[n].enzyme));
+    out[n].prob = it["prob"] | 0.0f;
+    n++;
+  }
+  return n;
+}
+
+// silent = true only records the current report id. Returns true when a NEW completed report was loaded.
+bool pollLatest(bool silent) {
+  DynamicJsonDocument doc(4096);
+  int code = getJson("/device/latest-report?device_id=" + API_KEY, doc, 8000);
+  if (code != 200) return false;
+  if (!(doc["status"] == "ok") || !(doc["report_status"] == "completed")) return false;
+  String rid = doc["report_id"].as<String>();
+  if (rid == lastReportId) return false;
+  lastReportId = rid;
+  if (silent) return false;
+  nPhyto = loadItems(doc["phyto"].as<JsonArray>(), 0);
+  nFood = loadItems(doc["food"].as<JsonArray>(), 1);
+  return true;
+}
+
+void drawDashCard(int x, int y, int w, int h, int kind, const char* label) {
+  drawCard(x, y, w, h);
+  int cx = x + w / 2, cy = y + 44;
+  display.fillCircle(cx, cy, 28, COL_ACCENT_SOFT);
+  display.drawCircle(cx, cy, 28, COL_ACCENT);
+  if (kind == 0) {  // leaf
+    display.fillEllipse(cx, cy, 10, 17, COL_PRIMARY);
+    display.drawLine(cx, cy + 16, cx, cy - 12, COL_ACCENT_SOFT);
+  } else {          // apple
+    display.fillCircle(cx - 6, cy + 3, 11, COL_RED);
+    display.fillCircle(cx + 6, cy + 3, 11, COL_RED);
+    display.fillRect(cx - 1, cy - 14, 3, 8, COL_PRIMARY_DARK);
+  }
+  T(label, cx, y + 92, F_TITLE, COL_TEXT, COL_WHITE, AL_C);
+  T("Tap to view", cx, y + 114, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_C);
+}
+
+void drawDashMenu() {
   drawHeader("Analysis Ready");
-  drawCard(20, 56, 440, 236);
-  T("Top predicted targets (research use only)", 36, 74, F_BODYB, COL_TEXT, COL_WHITE);
-  int y = 100;
-  for (int k = 0; k < 2; k++) {
-    JsonArray a = d[k ? "food" : "phyto"].as<JsonArray>();
-    T(k ? "Food" : "Phytochemical", 36, y, F_TINY, COL_TEXT_SOFT, COL_WHITE);
-    y += 16;
-    int n = 0;
-    for (JsonObject it : a) {
-      if (n++ >= 3) break;
-      char line[96];
-      snprintf(line, sizeof(line), "%s - %s  (%.0f%%)",
-               (const char*)(it["compound"] | "?"), (const char*)(it["enzyme"] | ""),
-               (double)(it["prob"] | 0.0f));
-      String s = fitText(line, 400, F_BODY);
-      T(s.c_str(), 36, y, F_BODY, COL_TEXT, COL_WHITE);
-      y += 24;
-    }
-    y += 6;
-  }
-  T("Full PDF report: web app > Reports. Tap for QR.", 240, 308, F_TINY, COL_TEXT_SOFT, COL_BG, AL_C);
-  if (adsOk) drawGlucoseButton();
+  drawDashCard(20, 60, 215, 134, 0, "Phytochemicals");
+  drawDashCard(245, 60, 215, 134, 1, "Food");
+  drawPill(100, 214, 280, 46, "Back to Glucose Test", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
+  T("Research use only. Full PDF report: web app > Reports.", 240, 290, F_TINY, COL_TEXT_SOFT, COL_BG, AL_C);
 }
 
-// silent = true only records the current report id (used at boot so an old report is not re-shown)
-void pollLatest(bool silent = false) {
-  HTTPClient http;
-  http.begin(String(CLOUD_HOST) + "/device/latest-report?device_id=" + API_KEY);
-  int code = http.GET();
-  if (code == 200) {
-    DynamicJsonDocument doc(3072);
-    if (deserializeJson(doc, http.getString()) == DeserializationError::Ok &&
-        doc["status"] == "ok" && doc["report_status"] == "completed") {
-      String rid = doc["report_id"].as<String>();
-      if (rid != lastReportId) {
-        lastReportId = rid;
-        if (!silent) drawReportSummary(doc.as<JsonObject>());
-      }
-    }
+void showResultList(int which) {
+  ResItem* items = which ? resFood : resPhyto;
+  int n = which ? nFood : nPhyto;
+  drawHeader(which ? "Food" : "Phytochemicals");
+  T("Research use only", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+  drawCard(20, 54, 440, 222);
+  if (n == 0) T("No results", 240, 165, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
+  for (int i = 0; i < n; i++) {
+    int ry = 62 + i * 42;
+    display.fillCircle(46, ry + 20, 12, COL_ACCENT_SOFT);
+    char nb[4];
+    snprintf(nb, sizeof(nb), "%d", i + 1);
+    T(nb, 46, ry + 20, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+    String c = fitText(items[i].compound, 290, F_BODYB);
+    T(c.c_str(), 68, ry + 12, F_BODYB, COL_TEXT, COL_WHITE);
+    String e = fitText((String("Target: ") + items[i].enzyme).c_str(), 290, F_TINY);
+    T(e.c_str(), 68, ry + 30, F_TINY, COL_TEXT_SOFT, COL_WHITE);
+    char pb[16];
+    snprintf(pb, sizeof(pb), "%.0f%%", (double)items[i].prob);
+    T(pb, 440, ry + 20, F_TITLE, COL_PRIMARY, COL_WHITE, AL_R);
+    if (i < n - 1) display.drawFastHLine(36, ry + 40, 408, COL_BORDER);
   }
-  http.end();
+  drawPill(130, 282, 100, 30, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+  drawPill(250, 282, 100, 30, "Done", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
+}
+
+// Returns true if the user chose "Done" (leave results), false for "Back" (to the dashboard menu).
+bool resultListLoop(int which) {
+  showResultList(which);
+  waitTouchRelease();
+  while (true) {
+    int tx, ty;
+    waitTap(tx, ty);
+    if (inRect(tx, ty, 130, 282, 100, 30)) { waitTouchRelease(); return false; }
+    if (inRect(tx, ty, 250, 282, 100, 30)) { waitTouchRelease(); return true; }
+  }
+}
+
+void runResultsFlow() {
+  bool leave = false;
+  while (!leave) {
+    drawDashMenu();
+    waitTouchRelease();
+    int tx, ty;
+    waitTap(tx, ty);
+    if (inRect(tx, ty, 20, 60, 215, 134)) { waitTouchRelease(); leave = resultListLoop(0); }
+    else if (inRect(tx, ty, 245, 60, 215, 134)) { waitTouchRelease(); leave = resultListLoop(1); }
+    else if (inRect(tx, ty, 100, 214, 280, 46)) { waitTouchRelease(); leave = true; }
+  }
+  showHome(true);
 }
 
 // ============================================================
@@ -929,8 +1232,7 @@ int postGlucoseReading(float value, int fasting) {
     lastReadingRef = String((uint32_t)esp_random(), HEX) + String((uint32_t)esp_random(), HEX);
   String body = "device_id=" + API_KEY + "&value=" + String(value, 1) +
                 "&fasting=" + (fasting ? "true" : "false") + "&client_ref=" + lastReadingRef;
-  String resp;
-  int code = postForm("/device/glucose", body, resp);
+  int code = postForm("/device/glucose", body, lastResp);
   if (code == 200 || code == 201) lastReadingRef = "";  // done: the next test gets a new ref
   return code;
 }
@@ -938,36 +1240,32 @@ int postGlucoseReading(float value, int fasting) {
 void runGlucoseFlow() {
   runGlucoseTest();
   if (!lastGlucoseValid) {  // the result screen already explained "no clear response"
-    showQRScreen();
+    showHome(false);
     return;
   }
   int fasting = askFasting();
   showBusy("Saving reading...");
   int code = postGlucoseReading(lastGlucoseValue, fasting);
-  while (code != 200 && code != 201) {  // retry keeps the same client_ref: no duplicates
-    String msg = errorFromResponse("", code);
-    showMessage("Could not save reading", msg, "Tap to retry");
+  while (code != 200 && code != 201) {
+    bool retryable = !(code == 400 || code == 403);
+    showMessage("Could not save reading", errorFromResponse(lastResp, code),
+                retryable ? "Tap to retry" : "Tap to continue");
+    if (!retryable) break;
     showBusy("Saving reading...");
-    code = postGlucoseReading(lastGlucoseValue, fasting);
-    if (code != 200 && code != 201 && (code == 400 || code == 403)) break;  // not retryable
+    code = postGlucoseReading(lastGlucoseValue, fasting);  // same client_ref: no duplicates
   }
   if (code == 200 || code == 201) {
-    drawHeader("Reading saved");
-    drawCard(20, 70, 440, 140);
-    T("Glucose saved to your account.", 240, 110, F_BODYB, COL_TEXT, COL_WHITE, AL_C);
-    T("Scan the QR code to upload your", 240, 150, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
-    T("microbiome CSV and run the analysis.", 240, 175, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
-    T("Tap to continue", 240, 262, F_BODYB, COL_PRIMARY, COL_BG, AL_C);
-    delay(300);
-    int x, y;
-    waitTouchRelease();
-    while (!readTouch(x, y)) delay(30);
-    waitTouchRelease();
-  } else {
-    lastReadingRef = "";
-    showMessage("Reading not saved", errorFromResponse("", code), "Tap to continue");
+    StaticJsonDocument<384> d;
+    if (deserializeJson(d, lastResp) == DeserializationError::Ok && d["id"].is<const char*>()) {
+      curReadingId = d["id"].as<String>();
+      curReadingValue = lastGlucoseValue;
+      curSource = "new_test";
+      showQRScreen();
+      return;
+    }
   }
-  showQRScreen();
+  lastReadingRef = "";
+  showHome(true);
 }
 
 // ============================================================
@@ -1346,6 +1644,66 @@ void runClaimWizard() {
   }
 }
 
+void runLogoutFlow() {
+  drawHeader("Log Out");
+  drawCard(20, 60, 440, 160);
+  T("Are you sure you want to log out?", 240, 95, F_TITLE, COL_TEXT, COL_WHITE, AL_C);
+  T("This unlinks this device from your account.", 240, 130, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
+  T("You will need your email OTP to link again.", 240, 155, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
+
+  const int BTN_CAN_X = 50, BTN_LOG_X = 250, BTN_Y = 240, BTN_W = 180, BTN_H = 46;
+  drawPill(BTN_CAN_X, BTN_Y, BTN_W, BTN_H, "Cancel", COL_WHITE, COL_PRIMARY_DARK, COL_BORDER);
+  drawPill(BTN_LOG_X, BTN_Y, BTN_W, BTN_H, "Log Out", COL_RED, COL_WHITE, COL_RED);
+
+  waitTouchRelease();
+  int x, y;
+  while (true) {
+    if (readTouch(x, y)) {
+      if (inRect(x, y, BTN_CAN_X, BTN_Y, BTN_W, BTN_H)) {
+        waitTouchRelease();
+        showHome(false);
+        return;
+      }
+      if (inRect(x, y, BTN_LOG_X, BTN_Y, BTN_W, BTN_H)) {
+        waitTouchRelease();
+        break;
+      }
+    }
+    delay(20);
+  }
+
+  showBusy("Logging out...");
+  String resp;
+  postForm("/device/logout", "device_id=" + API_KEY, resp);
+
+  // Clear local device preferences
+  prefs.putBool("claimed", false);
+  prefs.remove("age");
+  prefs.remove("hgt");
+  prefs.remove("wgt");
+  prefs.putBool("psync", false);
+  pAge = 0;
+  pHgt = 0;
+  pWgt = 0;
+  latestId = "";
+  latestValue = 0;
+  latestFasting = -1;
+  curReadingId = "";
+  curReadingValue = 0;
+
+  // Restart claim wizard for user login
+  runClaimWizard();
+  if (!profileComplete()) {
+    showBusy("Loading your profile...");
+    fetchProfileFromServer();
+  }
+  if (!profileComplete()) runProfileEntry("Your details");
+  else if (!prefs.getBool("psync", false)) syncProfile();
+
+  showHome(true);
+}
+
+
 // ============================================================
 // SETUP
 // ============================================================
@@ -1365,37 +1723,41 @@ void setup() {
     Serial.println("ADS1115: OK (SDA=8, SCL=9, gain=GAIN_ONE)");
   } else {
     adsOk = false;
-    Serial.println("ADS1115: NOT FOUND - glucose test button disabled");
+    Serial.println("ADS1115: NOT FOUND - glucose test disabled");
   }
 
   prefs.begin("gutdevice", false);
 
-  // BOOT button held at power-on = factory reset (clears password + API key)
+  // BOOT button held at power-on = factory reset (clears device key, link, profile)
   pinMode(0, INPUT_PULLUP);
-  bool setupDone = prefs.getBool("setup_done", false);
-  if (setupDone && digitalRead(0) == LOW) {
-    Serial.println("BOOT held at boot - factory reset (clearing password + API key)");
+  if (digitalRead(0) == LOW) {
+    Serial.println("BOOT held at boot - factory reset");
     prefs.clear();
-    API_KEY = "";
-    setupDone = false;
   }
 
-  if (!setupDone) runSetupWizard();
-  else API_KEY = prefs.getString("apikey", "");
-
+  ensureApiKey();
+  loadProfile();
+#if USE_DEVICE_PASSWORD
   runLoginGate();
+#endif
 
   WiFiManager wm;
   String apName = "GutHealth-Setup-" + API_KEY;
   wm.autoConnect(apName.c_str());
 
-  // Link device to account (first boot only)
+  // 1) First boot: registered email -> emailed OTP -> device linked to that user
   if (!prefs.getBool("claimed", false)) runClaimWizard();
 
-  showQRScreen();
+  // 2) Profile: age, height, weight (skipped when already stored)
+  if (!profileComplete()) {
+    showBusy("Loading your profile...");
+    fetchProfileFromServer();  // e.g. after a factory reset of an already-registered user
+  }
+  if (!profileComplete()) runProfileEntry("Your details");
+  else if (!prefs.getBool("psync", false)) syncProfile();
 
-  // Remember the newest existing report so only NEW analyses pop up on the screen.
-  pollLatest(true);
+  // 3) Glucose test page (every later boot lands here directly)
+  showHome(true);
 }
 
 // ============================================================
@@ -1404,27 +1766,26 @@ void setup() {
 void loop() {
   int tx, ty;
   if (readTouch(tx, ty)) {
-    if (onQRScreenNow) {
-      // QR screen: only the glucose button is active
-      if (adsOk && hitGlucoseButton(tx, ty)) {
-        delay(200);
+    if (screen == SC_HOME) {
+      handleHomeTouch(tx, ty);
+    } else if (screen == SC_QR) {
+      if (inRect(tx, ty, QB_X, QB_Y, QB_W, QB_H)) {
         waitTouchRelease();
-        runGlucoseFlow();
+        showHome(true);
       }
-    } else {
-      // "Analysis Ready" summary or "QR failed" screen
-      delay(150);
-      if (resultShown && adsOk && hitGlucoseButton(tx, ty)) {
+    } else if (screen == SC_FAILED) {
+      if (inRect(tx, ty, 40, 236, 180, 46)) {
         waitTouchRelease();
-        runGlucoseFlow();
-      } else {
+        showQRScreen();
+      } else if (inRect(tx, ty, 260, 236, 180, 46)) {
         waitTouchRelease();
-        showQRScreen();  // tap anywhere: back to the QR / retry
+        showHome(true);
       }
     }
   }
-  if (onQRScreenNow && millis() - lastPoll > POLL_INTERVAL_MS) {
-    pollLatest();
+  if (screen == SC_QR && millis() - lastPoll > POLL_INTERVAL_MS) {
+    bool fresh = pollLatest(false);
     lastPoll = millis();
+    if (fresh) runResultsFlow();
   }
 }
