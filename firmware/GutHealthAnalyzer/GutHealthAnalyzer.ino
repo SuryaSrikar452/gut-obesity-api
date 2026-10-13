@@ -515,6 +515,7 @@ String errorFromResponse(const String& resp, int code) {
   StaticJsonDocument<384> d;
   if (deserializeJson(d, resp) == DeserializationError::Ok && d["error"].is<const char*>())
     return d["error"].as<String>();
+  if (code == 200 || code == 201) return "Analysis created but could not load results. Tap to retry.";
   return "Server error " + String(code) + ".";
 }
 
@@ -819,7 +820,6 @@ void drawQRScreen(const String& url) {
 
   drawCard(232, 58, 224, 212);
   T("Upload your CSV", 248, 78, F_TITLE, COL_TEXT, COL_WHITE);
-  T("No login needed", 248, 98, F_BODY, COL_TEXT_SOFT, COL_WHITE);
   char g[40];
   snprintf(g, sizeof(g), "Glucose used: %.0f mg/dL", curReadingValue);
   T(g, 248, 116, F_TINY, COL_PRIMARY_DARK, COL_WHITE);
@@ -882,10 +882,13 @@ void runAutoPredictFlow() {
   int code = postForm("/device/analyze-cohort", body, resp);
   if (code == 200 || code == 201) {
     showBusy("Loading recommendations...");
-    delay(500);
-    if (pollLatest(false)) {
-      runResultsFlow();
-      return;
+    lastReportId = "";
+    for (int retry = 0; retry < 5; retry++) {
+      delay(600);
+      if (pollLatest(false)) {
+        runResultsFlow();
+        return;
+      }
     }
   }
   showMessage("Auto Predict Failed", errorFromResponse(resp, code), "Tap to continue");

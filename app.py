@@ -384,8 +384,15 @@ def _run_cohort_analysis(user, reading, source, age, height_cm, weight_kg, idem_
     features = [{"name": n, "value": v} for n, v in zip(SPECIES, matched_abundances)]
     now = datetime.now(timezone.utc).isoformat()
     rid = str(uuid.uuid4())
+    dev_id = user.get("device_id")
+    if not dev_id:
+        ur = sb.table("users").select("device_id").eq("id", user["id"]).execute()
+        if ur.data and ur.data[0].get("device_id"):
+            dev_id = ur.data[0]["device_id"]
+    if not dev_id:
+        dev_id = "device"
     sb.table("analysis_reports").insert({
-        "id": rid, "user_id": user["id"], "device_id": user.get("device_id") or "device", "status": "completed",
+        "id": rid, "user_id": user["id"], "device_id": dev_id, "status": "completed",
         "glucose_reading_id": reading["id"], "glucose_value": reading["value"], "glucose_unit": reading.get("unit", "mg/dL"),
         "glucose_source": source, "glucose_measured_at": reading.get("measured_at"), "fasting": reading.get("fasting"),
         "age": age, "height_cm": height_cm, "weight_kg": weight_kg,
@@ -842,9 +849,10 @@ async def upload_csv_analyze_cohort(code: str):
 async def device_analyze_cohort(device_id: str = Form(...),
                                 glucose_reading_id: Optional[str] = Form(None),
                                 glucose_source: str = Form("new_test")):
-    u = _claimed_user_by_device(device_id, "id,age,height_cm,weight_kg")
+    u = _claimed_user_by_device(device_id, "id,device_id,age,height_cm,weight_kg")
     if not u:
         return JSONResponse(status_code=403, content={"error": "Device not recognized."})
+    u["device_id"] = device_id
     if not (u.get("age") and u.get("height_cm") and u.get("weight_kg")):
         return JSONResponse(status_code=409, content={"error": "Profile missing. Open Edit Profile on the device."})
     if glucose_reading_id and _valid_uuid(glucose_reading_id):
@@ -859,6 +867,8 @@ async def device_analyze_cohort(device_id: str = Form(...),
     rid, matched_sample = await run_in_threadpool(
         _run_cohort_analysis, u, reading, glucose_source,
         u["age"], u["height_cm"], u["weight_kg"])
+    sb.table("users").update({"upload_code_hash": None, "upload_code_expires_at": None,
+                              "upload_reading_id": None}).eq("id", u["id"]).execute()
     return {"status": "ok", "report_id": rid, "cohort_matched": matched_sample}
 
 
