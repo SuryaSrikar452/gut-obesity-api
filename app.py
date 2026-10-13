@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from supabase import create_client
-from recommender import recommend_from_microbiome, MODEL_VERSION, get_food_source_for_enzyme, get_plant_source_for_enzyme
+from recommender import recommend_from_microbiome, recommend_from_nearest_cohort, MODEL_VERSION, get_food_source_for_enzyme, get_plant_source_for_enzyme
 from core.microbiome import parse_microbiome_csv, CsvValidationError, SPECIES
 from core.tokens import make_token, read_token, TokenError
 from core.pdf_report import report_to_pdf, reports_to_csv
@@ -377,6 +377,32 @@ def _run_analysis(user, reading, source, age, height_cm, weight_kg, raw_csv, sam
     return rid, parsed["warnings"]
 
 
+def _run_cohort_analysis(user, reading, source, age, height_cm, weight_kg, idem_key=None):
+    results = recommend_from_nearest_cohort(age, height_cm, weight_kg, reading["value"])
+    matched_sample = results.get("matched_cohort_sample", "Cohort match")
+    matched_abundances = results.get("abundances", [])
+    features = [{"name": n, "value": v} for n, v in zip(SPECIES, matched_abundances)]
+    now = datetime.now(timezone.utc).isoformat()
+    rid = str(uuid.uuid4())
+    sb.table("analysis_reports").insert({
+        "id": rid, "user_id": user["id"], "device_id": user.get("device_id") or "device", "status": "completed",
+        "glucose_reading_id": reading["id"], "glucose_value": reading["value"], "glucose_unit": reading.get("unit", "mg/dL"),
+        "glucose_source": source, "glucose_measured_at": reading.get("measured_at"), "fasting": reading.get("fasting"),
+        "age": age, "height_cm": height_cm, "weight_kg": weight_kg,
+        "sample_id": matched_sample, "csv_path": f"cohort:{matched_sample}",
+        "features": features, "preprocessing": f"Nearest cohort patient ({matched_sample}), CLR pseudocount=1e-3",
+        "model_version": MODEL_VERSION, "idempotency_key": idem_key,
+        "created_at": now, "completed_at": now,
+        "results": {
+            "phyto": results["phyto"], "food": results["food"],
+            "bmi": results["bmi"], "bmi_category": results["bmi_category"],
+            "fbg_category": results["fbg_category"]
+        }
+    }).execute()
+    return rid, matched_sample
+
+
+
 @app.post("/analyses", status_code=201)
 async def create_analysis(
     glucose_reading_id: str = Form(...), glucose_source: str = Form(...),
@@ -687,35 +713,77 @@ def _upload_user(code: str) -> dict:
 
 
 UPLOAD_CSV_PAGE = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Gut Health - Upload CSV</title>
-<style>:root{--p:#2E7D32;--bg:#F7FBF8;--t:#1B2E1D;--s:#5B6E5D}*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg);color:var(--t);font-family:system-ui,sans-serif}
-.c{background:#fff;border:1px solid rgba(46,125,50,.15);border-radius:16px;padding:24px;max-width:420px;width:100%}
-h1{font-size:20px;margin:0 0 6px;color:var(--p)}p{color:var(--s);margin:0 0 16px;font-size:14px}
-input,select,button{width:100%;font-size:16px;padding:12px;margin-top:10px;border-radius:10px;border:1px solid #cfe3d1;background:#fff}
-button{background:var(--p);color:#fff;border:0;font-weight:600}button:disabled{opacity:.5}
-#m{margin-top:14px;font-size:14px}.e{color:#c62828}.o{color:var(--p)}</style></head><body><div class="c">
-<h1>Upload microbiome CSV</h1>
-<p>Your glucose reading and profile are already on the device. Choose your CSV; the results will appear on the device screen.</p>
-<input type="file" id="f" accept=".csv,text/csv"><select id="s" hidden></select>
-<button id="b" disabled>Run analysis</button><div id="m"></div></div>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Gut Health - Microbiome Analysis</title>
+<style>:root{--p:#2E7D32;--p-dark:#1B5E20;--bg:#F7FBF8;--t:#1B2E1D;--s:#5B6E5D;--b:#cfe3d1}*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg);color:var(--t);font-family:system-ui,-apple-system,sans-serif}
+.c{background:#fff;border:1px solid rgba(46,125,50,.18);border-radius:18px;padding:26px;max-width:440px;width:100%;box-shadow:0 4px 16px rgba(0,0,0,.04)}
+h1{font-size:22px;margin:0 0 6px;color:var(--p-dark)}p{color:var(--s);margin:0 0 16px;font-size:14px;line-height:1.4}
+.box{background:#f9fcf9;border:1px solid var(--b);border-radius:12px;padding:14px;margin-bottom:16px}
+h3{margin:0 0 4px;font-size:15px;color:var(--p-dark)}
+.muted{color:var(--s);font-size:13px;margin:0 0 10px}
+input,select,button{width:100%;font-size:15px;padding:12px;margin-top:6px;border-radius:10px;border:1px solid var(--b);background:#fff;font-family:inherit}
+button{background:var(--p);color:#fff;border:0;font-weight:600;cursor:pointer;transition:background .2s}
+button:hover{background:var(--p-dark)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.sec-btn{background:#e8f5e9;color:var(--p-dark);border:1px solid var(--p)}
+.sec-btn:hover{background:#d0ebd2}
+.sep{display:flex;align-items:center;text-align:center;margin:16px 0;color:#8ba08d;font-size:12px;font-weight:700}
+.sep::before,.sep::after{content:'';flex:1;border-bottom:1px solid var(--b)}
+.sep span{padding:0 10px}
+#m{margin-top:14px;font-size:14px;padding:10px;border-radius:8px;display:none}
+#m.e{display:block;background:#feeceb;color:#c62828}
+#m.o{display:block;background:#e8f5e9;color:var(--p-dark)}
+#m.w{display:block;background:#fff8e1;color:#b26a00}</style></head><body><div class="c">
+<h1>Microbiome Analysis</h1>
+<p>Your glucose measurement and physical profile are recorded on the device. Choose how you want to proceed:</p>
+
+<div class="box">
+  <h3>Option 1: Upload Your Own CSV</h3>
+  <p class="muted">Upload your sequenced gut microbiome relative abundance CSV file.</p>
+  <input type="file" id="f" accept=".csv,text/csv"><select id="s" hidden></select>
+  <button id="b" disabled>Upload & Run Analysis</button>
+</div>
+
+<div class="sep"><span>OR</span></div>
+
+<div class="box">
+  <h3>Option 2: Don't Have a CSV File?</h3>
+  <p class="muted">The AI model will match the closest reference profile from our clinical cohort based on your glucose value and calculate recommendations.</p>
+  <button id="bc" class="sec-btn">Auto-Predict with Cohort Data</button>
+</div>
+
+<div id="m"></div></div>
 <script>
-const f=document.getElementById('f'),s=document.getElementById('s'),b=document.getElementById('b'),m=document.getElementById('m');
-f.onchange=()=>{b.disabled=!f.files[0];s.hidden=true;m.textContent='';};
+const f=document.getElementById('f'),s=document.getElementById('s'),b=document.getElementById('b'),bc=document.getElementById('bc'),m=document.getElementById('m');
+f.onchange=()=>{b.disabled=!f.files[0];s.hidden=true;m.style.display='none';};
 b.onclick=async()=>{
-  b.disabled=true;m.className='';m.textContent='Analysing... this can take a few seconds.';
+  b.disabled=bc.disabled=true;m.className='w';m.textContent='Analysing CSV... this can take a few seconds.';
   const fd=new FormData();fd.append('file',f.files[0]);if(!s.hidden&&s.value)fd.append('sample_id',s.value);
   try{
     const r=await fetch(location.pathname.replace(/\\/$/,'')+'/analyze',{method:'POST',body:fd});
     const d=await r.json().catch(()=>({}));
-    if(r.ok){m.className='o';m.textContent='Done. Your results are on the device screen.';return;}
+    if(r.ok){m.className='o';m.textContent='Done! Your results are now showing on the device screen.';return;}
     const det=d.detail;
     if(det&&det.sample_ids){s.innerHTML='';det.sample_ids.forEach(i=>{const o=document.createElement('option');o.value=o.textContent=i;s.appendChild(o);});
-      s.hidden=false;m.textContent=det.error+' Pick one and press Run again.';b.disabled=false;return;}
+      s.hidden=false;m.textContent=det.error+' Pick one and press Run again.';b.disabled=bc.disabled=false;return;}
     m.className='e';m.textContent=(det&&det.error)||(typeof det==='string'?det:'Upload failed.');
     if(det&&det.details)m.textContent+=' '+det.details.slice(0,5).join('; ');
-    b.disabled=false;
-  }catch(e){m.className='e';m.textContent='Network error. Try again.';b.disabled=false;}
+    b.disabled=bc.disabled=false;
+  }catch(e){m.className='e';m.textContent='Network error. Try again.';b.disabled=bc.disabled=false;}
+};
+bc.onclick=async()=>{
+  b.disabled=bc.disabled=true;m.className='w';m.textContent='Matching nearest reference cohort patient by glucose...';
+  try{
+    const r=await fetch(location.pathname.replace(/\\/$/,'')+'/analyze-cohort',{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok){
+      m.className='o';
+      m.textContent='Done! Matched reference sample ('+(d.cohort_matched||'Cohort')+'). Results are on your device screen.';
+      return;
+    }
+    m.className='e';m.textContent=(d&&d.error)||(d&&d.detail)||'Prediction failed.';
+    b.disabled=bc.disabled=false;
+  }catch(e){m.className='e';m.textContent='Network error. Try again.';b.disabled=bc.disabled=false;}
 };
 </script></body></html>"""
 
@@ -750,6 +818,49 @@ async def upload_csv_analyze(code: str, file: UploadFile = File(...), sample_id:
     sb.table("users").update({"upload_code_hash": None, "upload_code_expires_at": None,
                               "upload_reading_id": None}).eq("id", user["id"]).execute()  # one successful use
     return {"status": "ok", "report_id": rid, "warnings": warnings}
+
+
+@app.post("/u/{code}/analyze-cohort", status_code=201)
+async def upload_csv_analyze_cohort(code: str):
+    user = _upload_user(code)
+    if not check_rate_limit("up:" + str(user["id"])):
+        raise HTTPException(429, "Too many analyses. Wait a few minutes.")
+    rd = (sb.table("glucose_readings").select("*").eq("id", user["upload_reading_id"])
+          .eq("user_id", user["id"]).execute())
+    if not rd.data:
+        raise HTTPException(404, "Glucose reading not found. Open a new QR code on the device.")
+    reading = rd.data[0]
+    rid, matched_sample = await run_in_threadpool(
+        _run_cohort_analysis, user, reading, user.get("upload_source") or "new_test",
+        user["age"], user["height_cm"], user["weight_kg"])
+    sb.table("users").update({"upload_code_hash": None, "upload_code_expires_at": None,
+                              "upload_reading_id": None}).eq("id", user["id"]).execute()
+    return {"status": "ok", "report_id": rid, "cohort_matched": matched_sample}
+
+
+@app.post("/device/analyze-cohort", status_code=201)
+async def device_analyze_cohort(device_id: str = Form(...),
+                                glucose_reading_id: Optional[str] = Form(None),
+                                glucose_source: str = Form("new_test")):
+    u = _claimed_user_by_device(device_id, "id,age,height_cm,weight_kg")
+    if not u:
+        return JSONResponse(status_code=403, content={"error": "Device not recognized."})
+    if not (u.get("age") and u.get("height_cm") and u.get("weight_kg")):
+        return JSONResponse(status_code=409, content={"error": "Profile missing. Open Edit Profile on the device."})
+    if glucose_reading_id and _valid_uuid(glucose_reading_id):
+        rd = sb.table("glucose_readings").select("*").eq("id", glucose_reading_id).eq("user_id", u["id"]).execute()
+    else:
+        rd = sb.table("glucose_readings").select("*").eq("user_id", u["id"]).order("measured_at", desc=True).limit(1).execute()
+    if not rd.data:
+        return JSONResponse(status_code=404, content={"error": "Glucose reading not found."})
+    reading = rd.data[0]
+    if not check_rate_limit("up:" + str(u["id"])):
+        return JSONResponse(status_code=429, content={"error": "Too many analyses. Wait a few minutes."})
+    rid, matched_sample = await run_in_threadpool(
+        _run_cohort_analysis, u, reading, glucose_source,
+        u["age"], u["height_cm"], u["weight_kg"])
+    return {"status": "ok", "report_id": rid, "cohort_matched": matched_sample}
+
 
 
 def send_report_email(to_email: str, pdf: bytes, filename: str):

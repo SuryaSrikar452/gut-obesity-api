@@ -78,10 +78,12 @@ class _Kind:
         self.c_mu = self.clin.mean(axis=0)
         self.c_sd = self.clin.std(axis=0, ddof=1)
 
+        self.df = df
         X = np.hstack([self.clin, _clr(self.mic)])
         mu, sd = df[self.targets].mean(), df[self.targets].std()
         Y = ((df[self.targets] - mu) / sd).values
         self.model = XGBClassifier(**XGB_PARAMS).fit(X, Y.argmax(axis=1))
+
 
         db = pd.read_excel(_data_path(db_file), sheet_name=0)
         if kind == "phyto":
@@ -152,6 +154,32 @@ def recommend_from_microbiome(age, height_cm, weight_kg, fbg, abundances):
         "food": _FOOD.predict(age, bmi, fbg, abundances),
         "model_version": MODEL_VERSION,
     }
+
+
+def recommend_from_nearest_cohort(age, height_cm, weight_kg, fbg):
+    """
+    If the user has no microbiome CSV, find the closest reference patient in the cohort
+    by standardized Euclidean distance over [Age, BMI, FBG_mgdL] (matching nearest glucose
+    and clinical variables), and use their 20 species microbial abundances to run the models.
+    """
+    bmi = weight_kg / ((height_cm / 100.0) ** 2)
+    query = [age, bmi, fbg]
+    zq = (np.asarray(query, float) - _FOOD.c_mu) / _FOOD.c_sd
+    zr = (_FOOD.clin - _FOOD.c_mu) / _FOOD.c_sd
+    d = np.sqrt(((zr - zq) ** 2).sum(axis=1))
+    best_idx = int(np.argmin(d))
+    matched_row = _FOOD.df.iloc[best_idx]
+    matched_sample = str(matched_row.get("Sample_ID", f"Cohort #{best_idx + 1}"))
+    matched_fbg = float(matched_row.get("FBG_mgdL", fbg))
+    matched_mic = _FOOD.mic[best_idx].tolist()
+
+    res = recommend_from_microbiome(age, height_cm, weight_kg, fbg, matched_mic)
+    res["matched_cohort_sample"] = matched_sample
+    res["matched_cohort_fbg"] = matched_fbg
+    res["matched_cohort_distance"] = round(float(d[best_idx]), 3)
+    res["abundances"] = matched_mic
+    return res
+
 
 
 def get_food_source_for_enzyme(ec_label):

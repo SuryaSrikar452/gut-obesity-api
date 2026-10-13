@@ -774,7 +774,9 @@ void handleHomeTouch(int tx, int ty) {
 // ============================================================
 // QR SCREEN: the phone opens a one-time upload page (no login) for the microbiome CSV
 // ============================================================
-const int QB_X = 12, QB_Y = 282, QB_W = 100, QB_H = 30;
+const int QB_X = 24, QB_Y = 278, QB_W = 188, QB_H = 36;
+const int QA_X = 232, QA_Y = 278, QA_W = 224, QA_H = 36;
+void runAutoPredictFlow();
 
 void drawQRStep(int cy, int n, const char* text) {
   display.fillCircle(260, cy, 13, COL_ACCENT_SOFT);
@@ -813,27 +815,29 @@ void drawQRScreen(const String& url) {
     for (uint8_t x = 0; x < qr.size; x++)
       if (qrcode_getModule(&qr, x, y))
         display.fillRect(qx + x * scale, qy + y * scale, scale, scale, COL_TEXT);
-  T("Scan with your phone", cardX + cardW / 2, cardY + cardW + 22, F_BODYB, COL_PRIMARY, COL_BG, AL_C);
+  T("Scan with your phone", cardX + cardW / 2, cardY + cardW + 18, F_BODYB, COL_PRIMARY, COL_BG, AL_C);
 
-  drawCard(232, 58, 224, 227);
-  T("Upload your CSV", 248, 80, F_TITLE, COL_TEXT, COL_WHITE);
-  T("No login needed", 248, 104, F_BODY, COL_TEXT_SOFT, COL_WHITE);
+  drawCard(232, 58, 224, 212);
+  T("Upload your CSV", 248, 78, F_TITLE, COL_TEXT, COL_WHITE);
+  T("No login needed", 248, 98, F_BODY, COL_TEXT_SOFT, COL_WHITE);
   char g[40];
   snprintf(g, sizeof(g), "Glucose used: %.0f mg/dL", curReadingValue);
-  T(g, 248, 124, F_TINY, COL_PRIMARY_DARK, COL_WHITE);
-  display.drawFastVLine(260, 160, 12, COL_BORDER);
-  display.drawFastVLine(260, 198, 12, COL_BORDER);
-  drawQRStep(146, 1, "Scan the QR code");
-  drawQRStep(185, 2, "Choose the microbe CSV");
-  drawQRStep(224, 3, "Results show here");
-  display.drawFastHLine(248, 245, 192, COL_BORDER);
-  display.fillCircle(254, 265, 4, COL_ACCENT);
-  T("Waiting for analysis", 266, 265, F_BODY, COL_TEXT_SOFT, COL_WHITE);
-  drawFooter("Powered by AI - Gut Health");
+  T(g, 248, 116, F_TINY, COL_PRIMARY_DARK, COL_WHITE);
+  display.drawFastVLine(260, 154, 10, COL_BORDER);
+  display.drawFastVLine(260, 188, 10, COL_BORDER);
+  drawQRStep(140, 1, "Scan the QR code");
+  drawQRStep(174, 2, "Choose microbe CSV");
+  drawQRStep(208, 3, "Results show here");
+  display.drawFastHLine(248, 226, 192, COL_BORDER);
+  display.fillCircle(254, 246, 4, COL_ACCENT);
+  T("Waiting for analysis...", 266, 246, F_BODY, COL_TEXT_SOFT, COL_WHITE);
+
   drawPill(QB_X, QB_Y, QB_W, QB_H, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_BORDER);
+  drawPill(QA_X, QA_Y, QA_W, QA_H, "No CSV? Auto Predict", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
   screen = SC_QR;
   lastPoll = millis();
 }
+
 
 // Asks the backend for a one-time upload link bound to the chosen glucose reading.
 bool createUploadSession(String &url, String &err) {
@@ -869,6 +873,25 @@ void showQRScreen() {
   if (ok) drawQRScreen(url);
   else drawQRFailed(err);
 }
+
+void runAutoPredictFlow() {
+  showBusy("Matching cohort data by glucose...");
+  String body = "device_id=" + API_KEY + "&glucose_reading_id=" + curReadingId +
+                "&glucose_source=" + curSource;
+  String resp;
+  int code = postForm("/device/analyze-cohort", body, resp);
+  if (code == 200 || code == 201) {
+    showBusy("Loading recommendations...");
+    delay(500);
+    if (pollLatest(false)) {
+      runResultsFlow();
+      return;
+    }
+  }
+  showMessage("Auto Predict Failed", errorFromResponse(resp, code), "Tap to continue");
+  showQRScreen();
+}
+
 
 // ============================================================
 // RESULTS (from /device/latest-report: top predicted targets only)
@@ -1884,8 +1907,12 @@ void loop() {
       if (hitLogo(tx, ty) || inRect(tx, ty, QB_X, QB_Y, QB_W, QB_H)) {
         waitTouchRelease();
         showHome(true);
+      } else if (inRect(tx, ty, QA_X, QA_Y, QA_W, QA_H)) {
+        waitTouchRelease();
+        runAutoPredictFlow();
       }
     } else if (screen == SC_FAILED) {
+
       if (inRect(tx, ty, 40, 236, 180, 46)) {
         waitTouchRelease();
         showQRScreen();
