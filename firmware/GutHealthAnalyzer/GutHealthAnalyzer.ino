@@ -949,7 +949,7 @@ String prettyName(const char* s) {
     if (isalpha((unsigned char)c)) {
       o.setCharAt(i, cap ? (char)toupper(c) : (char)tolower(c));
       cap = false;
-    } else if (c == ' ' || c == '(' || c == '-' || c == '/') {
+    } else if (c == ' ' || c == '(' || c == '-' || c == '/' || c == ',') {
       cap = true;
     }
   }
@@ -991,7 +991,7 @@ void showResultList(int which) {
       display.setTextSize(1);
       const lgfx::IFont* tf = (display.textWidth(titleNm.c_str()) > 210) ? F_BODYB : F_TITLE;
       String tFit = fitText(titleNm.c_str(), 210, tf);
-      T(tFit.c_str(), tx, cy + 20, tf, COL_TEXT, COL_WHITE, AL_L);
+      T(tFit.c_str(), tx, cy + 20, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
 
       // Subtitle (Compound: <name>)
       String subStr;

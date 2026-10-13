@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from supabase import create_client
-from recommender import recommend_from_microbiome, MODEL_VERSION
+from recommender import recommend_from_microbiome, MODEL_VERSION, get_food_source_for_enzyme, get_plant_source_for_enzyme
 from core.microbiome import parse_microbiome_csv, CsvValidationError, SPECIES
 from core.tokens import make_token, read_token, TokenError
 from core.pdf_report import report_to_pdf, reports_to_csv
@@ -537,13 +537,25 @@ def device_latest_report(device_id: str):
         sources = x.get("sources") or []
         if isinstance(sources, list) and sources:
             return ", ".join(sources)
-        return x.get("food_name") or x.get("compound") or ""
+        if x.get("food_name") and x.get("food_name") != x.get("compound"):
+            return x.get("food_name")
+        # Dynamic fallback from model database by enzyme
+        src = get_food_source_for_enzyme(x.get("enzyme"))
+        if src:
+            return src
+        return x.get("compound") or ""
 
     def _phyto_source(x):
         sources = x.get("sources") or []
         if isinstance(sources, list) and sources:
             return ", ".join(sources)
-        return x.get("plant") or ""
+        if x.get("plant"):
+            return x.get("plant")
+        src = get_plant_source_for_enzyme(x.get("enzyme"))
+        if src:
+            return src
+        return ""
+
 
     return {
         "status": "ok",

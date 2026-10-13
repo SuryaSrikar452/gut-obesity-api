@@ -152,3 +152,30 @@ def recommend_from_microbiome(age, height_cm, weight_kg, fbg, abundances):
         "food": _FOOD.predict(age, bmi, fbg, abundances),
         "model_version": MODEL_VERSION,
     }
+
+
+def get_food_source_for_enzyme(ec_label):
+    if not ec_label:
+        return None
+    try:
+        row = _FOOD._best(str(ec_label))
+        if row is not None and pd.notna(row.get("food source")):
+            src = [s.strip() for s in str(row["food source"]).split(";") if s.strip()]
+            return ", ".join(src) if src else None
+    except Exception:
+        pass
+    return None
+
+
+def get_plant_source_for_enzyme(ec_label):
+    if not ec_label:
+        return None
+    try:
+        row = _PHYTO._best(str(ec_label))
+        if row is not None and pd.notna(row.get("Plant")):
+            plants = [p.strip() for p in str(row["Plant"]).split(",") if p.strip()]
+            return ", ".join(plants[:3]) if plants else None
+    except Exception:
+        pass
+    return None
+
