@@ -1,0 +1,43 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Glucose history</title></head><body>
+<div id="login" hidden></div>
+<div id="main" hidden><div id="nav"></div><main>
+ <h1>Glucose history</h1>
+ <div class="card"><label>From <input type="date" id="df"></label><label>To <input type="date" id="dt"></label>
+  <button id="apply">Filter</button><button class="sec" id="reset">Reset</button> <button class="sec" id="reload">Refresh</button>
+  <p id="count" class="muted"></p></div>
+ <div class="card" id="chartbox" hidden><svg id="chart" viewBox="0 0 600 180" width="100%" role="img" aria-label="Glucose trend"></svg></div>
+ <div class="card" id="list">Loading...</div>
+ <p class="warn">Readings from the experimental sensor are not clinically validated. Do not use them for medical decisions.</p>
+</main></div>
+<script src="/static/common.js"></script>
+<script>
+$('#nav').innerHTML = navBar('/dashboard/glucose');
+function chart(items) {
+  const pts = items.slice().reverse(); const box = $('#chartbox');
+  if (pts.length < 3) { box.hidden = true; return; } box.hidden = false;
+  const W = 600, H = 180, p = 28, vs = pts.map(x => x.value), lo = Math.min(...vs) - 5, hi = Math.max(...vs) + 5;
+  const X = i => p + i * (W - 2 * p) / (pts.length - 1), Y = v => H - p - (v - lo) / (hi - lo) * (H - 2 * p);
+  $('#chart').innerHTML = `<polyline fill="none" stroke="#2e7d32" stroke-width="2" points="${pts.map((x, i) => X(i) + ',' + Y(x.value)).join(' ')}"/>` +
+    pts.map((x, i) => `<circle cx="${X(i)}" cy="${Y(x.value)}" r="3" fill="#2e7d32"><title>${esc(x.value)} mg/dL - ${esc(fmtTime(x.measured_at))}</title></circle>`).join('') +
+    `<text x="4" y="${Y(hi - 5)}" font-size="10" fill="currentColor">${Math.round(hi - 5)}</text><text x="4" y="${Y(lo + 5)}" font-size="10" fill="currentColor">${Math.round(lo + 5)}</text>`;
+}
+async function load() {
+  $('#list').textContent = 'Loading...';
+  const q = new URLSearchParams(); // a date-only filter is interpreted in the browser's local timezone
+  if ($('#df').value) q.set('date_from', new Date($('#df').value + 'T00:00:00').toISOString());
+  if ($('#dt').value) q.set('date_to', new Date($('#dt').value + 'T23:59:59').toISOString());
+  try { const r = await api('/glucose?' + q); const it = r.items;
+    $('#count').textContent = 'Total tests: ' + r.total;
+    if (!it.length) { $('#list').innerHTML = '<p class="muted">No readings yet. Run a Glucose Test on the device.</p>'; chart([]); return; }
+    chart(it);
+    $('#list').innerHTML = '<table><tr><th>Value</th><th>Measured</th><th>Fasting</th><th>Reports</th><th></th></tr>' + it.map((x, i) => `<tr class="${i === 0 ? 'hl' : ''}">
+     <td><b>${esc(x.value)}</b> ${esc(x.unit)} ${i === 0 ? '<span class="pill">latest</span>' : ''}</td><td>${fmtTime(x.measured_at)}</td>
+     <td>${x.fasting === true ? 'Yes' : x.fasting === false ? 'No' : 'Unknown'}</td>
+     <td>${x.reports.map(r => `<a href="/dashboard/reports?open=${esc(r.id)}">${esc(r.id.slice(0, 8))}</a>`).join(', ') || '-'}</td>
+     <td><a href="/app"><button class="sec">Use for analysis</button></a></td></tr>`).join('') + '</table>';
+  } catch (e) { $('#list').innerHTML = '<p class="err">' + esc(e.message) + '</p>'; }
+}
+$('#apply').onclick = load; $('#reload').onclick = load; $('#reset').onclick = () => { $('#df').value = $('#dt').value = ''; load(); };
+requireLogin(load);
+</script></body></html>
