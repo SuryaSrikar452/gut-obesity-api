@@ -52,3 +52,15 @@ alter table analysis_reports enable row level security;
 -- Private bucket for uploaded CSVs (create in Storage UI or:)
 insert into storage.buckets (id, name, public) values ('microbiome-csv','microbiome-csv', false)
   on conflict (id) do nothing;
+
+-- Profile entered on the device + one-time QR upload link state
+alter table users
+  add column if not exists age int,
+  add column if not exists height_cm int,
+  add column if not exists weight_kg int,
+  add column if not exists upload_code_hash text,          -- sha256 of the QR code (never the code itself)
+  add column if not exists upload_code_expires_at timestamptz,
+  add column if not exists upload_reading_id uuid,         -- glucose reading chosen on the device
+  add column if not exists upload_source text;             -- 'new_test' | 'previous'
+create index if not exists users_upload_code_hash on users (upload_code_hash);
+
