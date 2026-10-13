@@ -6,13 +6,14 @@
 //  First boot : registered email -> emailed OTP (links this device to the user)
 //               -> profile (age, height, weight) -> glucose test page
 //  Later boots: straight to the glucose test page (Edit Profile is bottom-left)
-//  Glucose page: [Start Test] new measurement (+fasting question)  or  [Use Latest] saved reading
+//  Glucose page: [Start Test] new measurement (saved right away)  or  [Use Latest] saved reading
 //  Then       : QR code -> phone uploads the microbiome CSV (no login on the phone)
 //               glucose + profile + CSV are fed to both models
-//  Results    : dashboard with two choices (Phytochemicals / Food) -> list -> Back to glucose test
+//  Results    : dashboard (Phytochemicals / Food / Email PDF Report) -> list -> Back to glucose test
+//  Logo (top-left) = Back on every screen that has a previous screen
 //
 // Needs the matching backend changes (app.py + migration.sql):
-//   POST /device/profile, GET /device/profile, GET /device/latest-glucose,
+//   POST /device/profile, GET /device/profile, GET /device/latest-glucose, POST /device/email-report,
 //   POST /upload-session (now takes glucose_reading_id), GET /u/{code}, POST /u/{code}/analyze
 // Libraries: WiFiManager (tzapu), ArduinoJson v6, LovyanGFX, Adafruit_ADS1X15,
 //            Wire, Preferences, HTTPClient, qrcode.h + qrcode.c in the sketch folder
@@ -157,6 +158,7 @@ float latestValue = 0;
 int latestFasting = -1;               // -1 unknown, 0 no, 1 yes
 
 // Which screen the main loop is serving (other screens are blocking flows)
+bool logoBackEnabled = false;       // keypad screens: logo tap returns "BACK"
 enum Screen { SC_HOME, SC_QR, SC_FAILED };
 Screen screen = SC_HOME;
 String qrError = "";
@@ -352,6 +354,7 @@ String waitForKeyTap() {
   while (true) {
     int tx, ty;
     if (readTouch(tx, ty)) {
+      if (logoBackEnabled && hitLogo(tx, ty)) { waitTouchRelease(); return String("BACK"); }
       int idx = hitKey(tx, ty);
       if (idx >= 0) {
         drawKey(idx, true);
@@ -381,6 +384,7 @@ String capturePassword(const char* title, const char* subtitle) {
   drawPasswordScreen(title, subtitle, entered, false);
   while (true) {
     String key = waitForKeyTap();
+    if (key == "BACK") return key;
     if (key == "<-") {
       if (entered.length() > 0) entered.remove(entered.length() - 1);
     } else if (key == "OK") {
@@ -446,6 +450,9 @@ void runLoginGate() {
 // ============================================================
 // SMALL UI HELPERS
 // ============================================================
+// The logo in the header's top-left corner acts as a Back button.
+bool hitLogo(int tx, int ty) { return tx >= 0 && tx <= 58 && ty >= 0 && ty <= 46; }
+
 bool inRect(int tx, int ty, int x, int y, int w, int h) {
   const int pad = 4;
   return tx >= x - pad && tx <= x + w + pad && ty >= y - pad && ty <= y + h + pad;
@@ -609,7 +616,8 @@ void drawNumberSubtitle(const char* text, bool error) {
   T(text, 240, 62, F_BODY, error ? COL_RED : COL_TEXT_SOFT, COL_BG, AL_C);
 }
 
-int captureNumber(const char* title, const char* subtitle, const char* unit, int initial, int minV, int maxV) {
+// Returns the number, or -1 when the logo (Back) was tapped and canGoBack is true.
+int captureNumber(const char* title, const char* subtitle, const char* unit, int initial, int minV, int maxV, bool canGoBack) {
   String entered = initial > 0 ? String(initial) : String("");
   int maxLen = String(maxV).length();
   drawHeader(title);
@@ -617,14 +625,16 @@ int captureNumber(const char* title, const char* subtitle, const char* unit, int
   drawKeypad();
   drawNumberSubtitle(subtitle, false);
   drawNumberField(entered, unit, false);
+  logoBackEnabled = canGoBack;
   while (true) {
     String key = waitForKeyTap();
+    if (key == "BACK") { logoBackEnabled = false; return -1; }
     if (key == "<-") {
       if (entered.length() > 0) entered.remove(entered.length() - 1);
     } else if (key == "OK") {
       if (entered.length() > 0) {
         int v = entered.toInt();
-        if (v >= minV && v <= maxV) return v;
+        if (v >= minV && v <= maxV) { logoBackEnabled = false; return v; }
         char m[48];
         snprintf(m, sizeof(m), "Enter %d to %d %s", minV, maxV, unit);
         drawNumberSubtitle(m, true);
@@ -639,15 +649,30 @@ int captureNumber(const char* title, const char* subtitle, const char* unit, int
   }
 }
 
-// Three screens: age, height, weight. Current values are pre-filled when editing.
-void runProfileEntry(const char* heading) {
-  pAge = captureNumber(heading, "Your age", "years", pAge, 1, 120);
-  pHgt = captureNumber(heading, "Your height", "cm", pHgt, 100, 250);
-  pWgt = captureNumber(heading, "Your weight", "kg", pWgt, 20, 300);
+// Age -> height -> weight. The logo steps back one field; on the first field it cancels
+// (only when canCancel, i.e. when editing). Returns false if cancelled (nothing changed).
+bool runProfileEntry(const char* heading, bool canCancel) {
+  int a = pAge, h = pHgt, w = pWgt;
+  int step = 0;
+  while (step < 3) {
+    int v;
+    if (step == 0)      v = captureNumber(heading, "Your age", "years", a, 1, 120, canCancel);
+    else if (step == 1) v = captureNumber(heading, "Your height", "cm", h, 100, 250, true);
+    else                v = captureNumber(heading, "Your weight", "kg", w, 20, 300, true);
+    if (v < 0) {
+      if (step == 0) return false;
+      step--;
+      continue;
+    }
+    if (step == 0) a = v; else if (step == 1) h = v; else w = v;
+    step++;
+  }
+  pAge = a; pHgt = h; pWgt = w;
   saveProfileLocal();
   showBusy("Saving profile...");
   if (!syncProfile())
     showMessage("Saved on device", "Could not reach the server. Your profile will be sent later.", "Tap to continue");
+  return true;
 }
 
 void profileScreen() {
@@ -669,10 +694,10 @@ void profileScreen() {
   while (true) {
     int tx, ty;
     waitTap(tx, ty);
-    if (inRect(tx, ty, 40, 232, 180, 46)) { waitTouchRelease(); return; }
+    if (hitLogo(tx, ty) || inRect(tx, ty, 40, 232, 180, 46)) { waitTouchRelease(); return; }
     if (inRect(tx, ty, 260, 232, 180, 46)) {
       waitTouchRelease();
-      runProfileEntry("Edit profile");
+      runProfileEntry("Edit profile", true);
       return;
     }
   }
@@ -896,31 +921,68 @@ void drawDashMenu() {
   drawHeader("Analysis Ready");
   drawDashCard(20, 60, 215, 134, 0, "Phytochemicals");
   drawDashCard(245, 60, 215, 134, 1, "Food");
-  drawPill(100, 214, 280, 46, "Back to Glucose Test", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
-  T("Research use only. Full PDF report: web app > Reports.", 240, 290, F_TINY, COL_TEXT_SOFT, COL_BG, AL_C);
+  drawPill(20, 210, 215, 46, "Email PDF Report", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
+  drawPill(245, 210, 215, 46, "Back to Glucose Test", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+  T("Research use only. The PDF is sent to your registered email.", 240, 290, F_TINY, COL_TEXT_SOFT, COL_BG, AL_C);
+}
+
+// Food names arrive in many shapes ("RAW_APPLE", "apple, raw"): show them as tidy Title Case.
+String prettyName(const char* s) {
+  String o = s;
+  o.replace("_", " ");
+  o.trim();
+  bool cap = true;
+  for (unsigned i = 0; i < o.length(); i++) {
+    char c = o[i];
+    if (isalpha((unsigned char)c)) {
+      o.setCharAt(i, cap ? (char)toupper(c) : (char)tolower(c));
+      cap = false;
+    } else if (c == ' ' || c == '(' || c == '-' || c == '/') {
+      cap = true;
+    }
+  }
+  return o;
 }
 
 void showResultList(int which) {
   ResItem* items = which ? resFood : resPhyto;
   int n = which ? nFood : nPhyto;
-  drawHeader(which ? "Food" : "Phytochemicals");
+  drawHeader(which ? "Food Recommendations" : "Phytochemicals");
   T("Research use only", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
   drawCard(20, 54, 440, 222);
   if (n == 0) T("No results", 240, 165, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
   for (int i = 0; i < n; i++) {
     int ry = 62 + i * 42;
-    display.fillCircle(46, ry + 20, 12, COL_ACCENT_SOFT);
+    if (which) display.fillRoundRect(28, ry + 2, 424, 38, 10, COL_ACCENT_SOFT);  // highlighted food tile
+    uint16_t circ = which ? COL_WHITE : COL_ACCENT_SOFT;
+    display.fillCircle(46, ry + 21, 12, circ);
     char nb[4];
     snprintf(nb, sizeof(nb), "%d", i + 1);
-    T(nb, 46, ry + 20, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
-    String c = fitText(items[i].compound, 290, F_BODYB);
-    T(c.c_str(), 68, ry + 12, F_BODYB, COL_TEXT, COL_WHITE);
-    String e = fitText((String("Target: ") + items[i].enzyme).c_str(), 290, F_TINY);
-    T(e.c_str(), 68, ry + 30, F_TINY, COL_TEXT_SOFT, COL_WHITE);
-    char pb[16];
-    snprintf(pb, sizeof(pb), "%.0f%%", (double)items[i].prob);
-    T(pb, 440, ry + 20, F_TITLE, COL_PRIMARY, COL_WHITE, AL_R);
-    if (i < n - 1) display.drawFastHLine(36, ry + 40, 408, COL_BORDER);
+    T(nb, 46, ry + 21, F_BODYB, COL_PRIMARY_DARK, circ, AL_C);
+    uint16_t rowBg = which ? COL_ACCENT_SOFT : COL_WHITE;
+    if (which) {
+      String nm = prettyName(items[i].compound);
+      display.setFont(F_TITLE);
+      display.setTextSize(1);
+      const lgfx::IFont* nf = (display.textWidth(nm.c_str()) > 285) ? F_BODYB : F_TITLE;  // big name, smaller only if long
+      String c = fitText(nm.c_str(), 285, nf);
+      T(c.c_str(), 68, ry + 14, nf, COL_PRIMARY_DARK, rowBg);
+      String e = fitText((String("Target: ") + items[i].enzyme).c_str(), 285, F_TINY);
+      T(e.c_str(), 68, ry + 32, F_TINY, COL_TEXT_SOFT, rowBg);
+      char pb[16];
+      snprintf(pb, sizeof(pb), "%.0f%%", (double)items[i].prob);
+      display.fillRoundRect(366, ry + 9, 76, 24, 12, COL_PRIMARY);
+      T(pb, 404, ry + 21, F_BODYB, COL_WHITE, COL_PRIMARY, AL_C);
+    } else {
+      String c = fitText(items[i].compound, 290, F_BODYB);
+      T(c.c_str(), 68, ry + 12, F_BODYB, COL_TEXT, rowBg);
+      String e = fitText((String("Target: ") + items[i].enzyme).c_str(), 290, F_TINY);
+      T(e.c_str(), 68, ry + 30, F_TINY, COL_TEXT_SOFT, rowBg);
+      char pb[16];
+      snprintf(pb, sizeof(pb), "%.0f%%", (double)items[i].prob);
+      T(pb, 440, ry + 20, F_TITLE, COL_PRIMARY, rowBg, AL_R);
+      if (i < n - 1) display.drawFastHLine(36, ry + 40, 408, COL_BORDER);
+    }
   }
   drawPill(130, 282, 100, 30, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
   drawPill(250, 282, 100, 30, "Done", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
@@ -933,8 +995,41 @@ bool resultListLoop(int which) {
   while (true) {
     int tx, ty;
     waitTap(tx, ty);
-    if (inRect(tx, ty, 130, 282, 100, 30)) { waitTouchRelease(); return false; }
+    if (hitLogo(tx, ty) || inRect(tx, ty, 130, 282, 100, 30)) { waitTouchRelease(); return false; }
     if (inRect(tx, ty, 250, 282, 100, 30)) { waitTouchRelease(); return true; }
+  }
+}
+
+// Neutral (non-error) notice screen.
+void showInfo(const char* title, const String& msg, const char* hint) {
+  drawHeader(title);
+  drawCard(20, 70, 440, 150);
+  drawWrapped(msg, 40, 110, 400, 28, 4, COL_TEXT, COL_WHITE);
+  T(hint, 240, 262, F_BODYB, COL_PRIMARY, COL_BG, AL_C);
+  delay(300);
+  int x, y;
+  waitTouchRelease();
+  while (!readTouch(x, y)) delay(30);
+  waitTouchRelease();
+}
+
+// Asks the server to e-mail the PDF of the report on screen to the registered address.
+void emailReport() {
+  if (lastReportId.length() == 0) {
+    showMessage("No report", "There is no completed report to send yet.", "Tap to continue");
+    return;
+  }
+  showBusy("Emailing PDF report...");
+  String resp;
+  int code = postForm("/device/email-report", "device_id=" + API_KEY + "&report_id=" + lastReportId, resp);
+  if (code == 200) {
+    String to = "your registered email";
+    StaticJsonDocument<256> d;
+    if (deserializeJson(d, resp) == DeserializationError::Ok && d["sent_to"].is<const char*>())
+      to = d["sent_to"].as<String>();
+    showInfo("Report sent", String("The PDF report was sent to ") + to + ". Check your inbox (and spam).", "Tap to continue");
+  } else {
+    showMessage("Could not send report", errorFromResponse(resp, code), "Tap to continue");
   }
 }
 
@@ -947,7 +1042,8 @@ void runResultsFlow() {
     waitTap(tx, ty);
     if (inRect(tx, ty, 20, 60, 215, 134)) { waitTouchRelease(); leave = resultListLoop(0); }
     else if (inRect(tx, ty, 245, 60, 215, 134)) { waitTouchRelease(); leave = resultListLoop(1); }
-    else if (inRect(tx, ty, 100, 214, 280, 46)) { waitTouchRelease(); leave = true; }
+    else if (inRect(tx, ty, 20, 210, 215, 46)) { waitTouchRelease(); emailReport(); }
+    else if (hitLogo(tx, ty) || inRect(tx, ty, 245, 210, 215, 46)) { waitTouchRelease(); leave = true; }
   }
   showHome(true);
 }
@@ -1201,37 +1297,13 @@ void runGlucoseTest() {
 }
 
 // ============================================================
-// FASTING QUESTION + POST GLUCOSE
-// The models treat glucose as FASTING blood glucose, so the user is asked.
-// Returns 1 = fasting, 0 = not fasting.
+// POST GLUCOSE (no fasting question: the reading is saved right after the test)
 // ============================================================
-int askFasting() {
-  drawHeader("Glucose Test");
-  drawCard(20, 60, 440, 130);
-  T("Was this measured fasting?", 240, 100, F_TITLE, COL_TEXT, COL_WHITE, AL_C);
-  T("(no food or drink except water for 8+ hours)", 240, 135, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
-  display.fillRoundRect(40, 215, 180, 50, 25, COL_PRIMARY);
-  T("Yes", 130, 240, F_BODYB, COL_WHITE, COL_PRIMARY, AL_C);
-  display.fillRoundRect(260, 215, 180, 50, 25, COL_AMBER);
-  T("No", 350, 240, F_BODYB, COL_WHITE, COL_AMBER, AL_C);
-  waitTouchRelease();
-  while (true) {
-    int x, y;
-    if (readTouch(x, y) && y >= 215 && y <= 265) {
-      int r = (x < 240) ? 1 : 0;
-      waitTouchRelease();
-      return r;
-    }
-    delay(30);
-  }
-}
-
 // POST /device/glucose. Retrying with the same client_ref returns the same stored reading.
-int postGlucoseReading(float value, int fasting) {
+int postGlucoseReading(float value) {
   if (lastReadingRef.length() == 0)
     lastReadingRef = String((uint32_t)esp_random(), HEX) + String((uint32_t)esp_random(), HEX);
-  String body = "device_id=" + API_KEY + "&value=" + String(value, 1) +
-                "&fasting=" + (fasting ? "true" : "false") + "&client_ref=" + lastReadingRef;
+  String body = "device_id=" + API_KEY + "&value=" + String(value, 1) + "&client_ref=" + lastReadingRef;
   int code = postForm("/device/glucose", body, lastResp);
   if (code == 200 || code == 201) lastReadingRef = "";  // done: the next test gets a new ref
   return code;
@@ -1243,16 +1315,15 @@ void runGlucoseFlow() {
     showHome(false);
     return;
   }
-  int fasting = askFasting();
   showBusy("Saving reading...");
-  int code = postGlucoseReading(lastGlucoseValue, fasting);
+  int code = postGlucoseReading(lastGlucoseValue);
   while (code != 200 && code != 201) {
     bool retryable = !(code == 400 || code == 403);
     showMessage("Could not save reading", errorFromResponse(lastResp, code),
                 retryable ? "Tap to retry" : "Tap to continue");
     if (!retryable) break;
     showBusy("Saving reading...");
-    code = postGlucoseReading(lastGlucoseValue, fasting);  // same client_ref: no duplicates
+    code = postGlucoseReading(lastGlucoseValue);  // same client_ref: no duplicates
   }
   if (code == 200 || code == 201) {
     StaticJsonDocument<384> d;
@@ -1521,8 +1592,8 @@ void kbBuild() {
     for (int i = 0; i < n; i++) { kbAdd(x, y, kw, kh, row[i]); x += kw + gap; }
     if (r == 2) kbAdd(x, y, 62, kh, '\b');
   }
-  int widths[6] = {72, 56, 56, 56, 56, 120};
-  char cs[6] = {'\t', '@', '.', '_', '-', '\r'};  // \t = 123/abc toggle, \r = OK
+  int widths[6] = {60, 140, 48, 48, 48, 100};
+  char cs[6] = {'\t', '\x01', '.', '_', '-', '\r'};  // \t = 123/abc toggle, \x01 = @gmail.com, \r = OK
   int total = 5 * gap;
   for (int i = 0; i < 6; i++) total += widths[i];
   int x = (480 - total) / 2;
@@ -1532,7 +1603,7 @@ void kbBuild() {
 
 void kbDrawKey(int i, bool pressed) {
   KbKey &k = kbKeys[i];
-  bool special = (k.c == '\b' || k.c == '\t' || k.c == '\r');
+  bool special = (k.c == '\b' || k.c == '\t' || k.c == '\r' || k.c == '\x01');
   uint16_t fill = pressed ? (special ? COL_PRIMARY_DARK : COL_ACCENT_SOFT)
                           : (special ? COL_SECONDARY : COL_WHITE);
   uint16_t fg = special ? COL_WHITE : COL_TEXT;
@@ -1543,6 +1614,7 @@ void kbDrawKey(int i, bool pressed) {
   int cx = k.x + k.w / 2, cy = k.y + dy + k.h / 2;
   if (k.c == '\b') drawBackspaceIcon(cx, cy, fg, fill);
   else if (k.c == '\r') drawCheckIcon(cx, cy, fg);
+  else if (k.c == '\x01') T("@gmail.com", cx, cy, F_BODYB, fg, fill, AL_C);
   else if (k.c == '\t') T(kbSym ? "abc" : "123", cx, cy, F_BODYB, fg, fill, AL_C);
   else { char sb[2] = {k.c, 0}; T(sb, cx, cy, F_BODYB, fg, fill, AL_C); }
 }
@@ -1606,6 +1678,8 @@ String captureEmail() {
       if (looksLikeEmail(text)) return text;
       kbDrawField(text, true);
       delay(600);
+    } else if (c == '\x01') {  // one tap completes the address: name + @gmail.com
+      if (text.length() > 0 && text.indexOf('@') < 0 && text.length() + 10 <= 60) text += "@gmail.com";
     } else if (text.length() < 60) {
       text += c;
     }
@@ -1627,7 +1701,10 @@ void runClaimWizard() {
         showMessage("Could not send code", errorFromResponse(resp, code), "Tap to change email");
         break;  // back to email entry
       }
+      logoBackEnabled = true;
       String otp = capturePassword("Check your email", "Enter the 6-digit code");
+      logoBackEnabled = false;
+      if (otp == "BACK") break;  // logo = back to email entry
       if (otp.length() != 6) {
         showMessage("Invalid code", "The code has 6 digits.", "Tap to get a new code");
         continue;
@@ -1659,7 +1736,7 @@ void runLogoutFlow() {
   int x, y;
   while (true) {
     if (readTouch(x, y)) {
-      if (inRect(x, y, BTN_CAN_X, BTN_Y, BTN_W, BTN_H)) {
+      if (hitLogo(x, y) || inRect(x, y, BTN_CAN_X, BTN_Y, BTN_W, BTN_H)) {
         waitTouchRelease();
         showHome(false);
         return;
@@ -1697,7 +1774,7 @@ void runLogoutFlow() {
     showBusy("Loading your profile...");
     fetchProfileFromServer();
   }
-  if (!profileComplete()) runProfileEntry("Your details");
+  if (!profileComplete()) runProfileEntry("Your details", false);
   else if (!prefs.getBool("psync", false)) syncProfile();
 
   showHome(true);
@@ -1753,7 +1830,7 @@ void setup() {
     showBusy("Loading your profile...");
     fetchProfileFromServer();  // e.g. after a factory reset of an already-registered user
   }
-  if (!profileComplete()) runProfileEntry("Your details");
+  if (!profileComplete()) runProfileEntry("Your details", false);
   else if (!prefs.getBool("psync", false)) syncProfile();
 
   // 3) Glucose test page (every later boot lands here directly)
@@ -1769,7 +1846,7 @@ void loop() {
     if (screen == SC_HOME) {
       handleHomeTouch(tx, ty);
     } else if (screen == SC_QR) {
-      if (inRect(tx, ty, QB_X, QB_Y, QB_W, QB_H)) {
+      if (hitLogo(tx, ty) || inRect(tx, ty, QB_X, QB_Y, QB_W, QB_H)) {
         waitTouchRelease();
         showHome(true);
       }
@@ -1777,7 +1854,7 @@ void loop() {
       if (inRect(tx, ty, 40, 236, 180, 46)) {
         waitTouchRelease();
         showQRScreen();
-      } else if (inRect(tx, ty, 260, 236, 180, 46)) {
+      } else if (hitLogo(tx, ty) || inRect(tx, ty, 260, 236, 180, 46)) {
         waitTouchRelease();
         showHome(true);
       }
