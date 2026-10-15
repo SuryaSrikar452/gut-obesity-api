@@ -97,7 +97,7 @@ class _Kind:
 
     def _best(self, ec_label):
         ec = ec_label.replace("EC ", "").strip()
-        d = self.db[self.db[self.ec_col] == ec].sort_values(self.pic_col, ascending=False)
+        d = self.db[self.db[self.ec_col] == ec].sort_values(self.pic_col, ascending=True)
         return None if d.empty else d.iloc[0]
 
     def predict(self, age, bmi, fbg, abundances):
@@ -127,6 +127,16 @@ class _Kind:
                     item.update(enzyme_name=_short(row["Enzyme_Definition"]), compound=str(row["Food_Compound"]),
                                 pic50=round(float(row["pic50"]), 2), sources=src[:4])
             items.append(item)
+
+        # Sort so the top recommendation has the lowest pIC50 value
+        def _pic_key(x):
+            v = x.get("pic50")
+            try:
+                fv = float(v)
+                return fv if fv > 0.01 else 999.0
+            except (ValueError, TypeError):
+                return 999.0
+        items.sort(key=_pic_key)
         return items
 
 

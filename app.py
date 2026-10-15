@@ -694,9 +694,13 @@ def device_latest_report(device_id: str):
                 "compound": x.get("compound"),
                 "enzyme": x.get("enzyme"),
                 "prob": x.get("prob"),
+                "pic50": x.get("pic50") or 0.0,
                 "plant": _phyto_source(x),
             }
-            for x in (res.get("phyto") or [])[:5]
+            for x in sorted(
+                res.get("phyto") or [],
+                key=lambda it: float(it.get("pic50") or 999.0) if float(it.get("pic50") or 0.0) > 0.01 else 999.0
+            )[:5]
         ],
         "food": [
             {
@@ -704,9 +708,18 @@ def device_latest_report(device_id: str):
                 "compound": x.get("compound"),
                 "enzyme": x.get("enzyme"),
                 "prob": x.get("prob"),
+                "pic50": x.get("pic50") or 0.0,
             }
-            for x in (res.get("food") or [])[:5]
+            for x in sorted(
+                res.get("food") or [],
+                key=lambda it: float(it.get("pic50") or 999.0) if float(it.get("pic50") or 0.0) > 0.01 else 999.0
+            )[:5]
         ],
+        "tables": {
+            "microbes": "fbg_input_food.xlsx",
+            "food": "IC50_Matches_food.xlsx",
+            "phyto": "EC_Phytochemical_pIC50_12_rows_t2d.xlsx",
+        },
     }
 
 

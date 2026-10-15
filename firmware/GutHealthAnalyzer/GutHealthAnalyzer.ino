@@ -164,7 +164,7 @@ Screen screen = SC_HOME;
 String qrError = "";
 
 // Model output shown on the dashboard (top 5 each, top 3 microbes)
-struct ResItem { char food[48]; char compound[48]; char enzyme[24]; float prob; };
+struct ResItem { char food[48]; char compound[48]; char enzyme[24]; float prob; float pic50; };
 struct MicrobeItem {
   char name[48];
   char tag[16];
@@ -935,7 +935,20 @@ int loadItems(JsonArray a, int which) {
     enz.trim();
     strlcpy(out[n].enzyme, enz.c_str(), sizeof(out[n].enzyme));
     out[n].prob = it["prob"] | 0.0f;
+    out[n].pic50 = it["pic50"] | 0.0f;
     n++;
+  }
+  // Sort ascending by pIC50 so the top recommendation (#1) has the lowest value
+  for (int i = 0; i < n - 1; i++) {
+    for (int j = i + 1; j < n; j++) {
+      float v1 = (out[i].pic50 > 0.01f) ? out[i].pic50 : 999.0f;
+      float v2 = (out[j].pic50 > 0.01f) ? out[j].pic50 : 999.0f;
+      if (v2 < v1) {
+        ResItem tmp = out[i];
+        out[i] = out[j];
+        out[j] = tmp;
+      }
+    }
   }
   return n;
 }
@@ -1037,11 +1050,15 @@ void showResultList(int which) {
   ResItem* items = which ? resFood : resPhyto;
   int n = which ? nFood : nPhyto;
   drawHeader(which ? "Food Recommendations" : "Phytochemicals");
+
+  // Show Table Name and Sample ID at the top right header
+  const char* tblName = which ? "Table: IC50_Matches_food.xlsx" : "Table: EC_Phyto_pIC50_12_rows.xlsx";
+  T(tblName, 472, 13, F_TINY, COL_ACCENT_SOFT, TRANSP, AL_R);
   if (strlen(lastSampleId) > 0) {
     char sbuf[48]; snprintf(sbuf, sizeof(sbuf), "Sample: %s", lastSampleId);
-    T(sbuf, 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+    T(sbuf, 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
   } else {
-    T("Research use only", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+    T("Cohort Match", 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
   }
 
   if (n == 0) {
@@ -1061,18 +1078,18 @@ void showResultList(int which) {
       T(nb, numX + numW / 2, numY + numH / 2, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
 
       // Icon circle (leaf/food emblem)
-      int iconX = cx + 50, iconY = cy + ch / 2;
+      int iconX = cx + 48, iconY = cy + ch / 2;
       display.fillCircle(iconX, iconY, 13, COL_ACCENT_SOFT);
       display.fillCircle(iconX, iconY + 1, 6, COL_SECONDARY);
       display.fillTriangle(iconX, iconY - 8, iconX - 5, iconY, iconX + 5, iconY, COL_SECONDARY);
 
       // Primary Title (Food name highlighted prominently)
-      int tx = cx + 72;
+      int tx = cx + 68;
       String titleNm = prettyName(items[i].food);
       display.setFont(F_TITLE);
       display.setTextSize(1);
-      const lgfx::IFont* tf = (display.textWidth(titleNm.c_str()) > 210) ? F_BODYB : F_TITLE;
-      String tFit = fitText(titleNm.c_str(), 210, tf);
+      const lgfx::IFont* tf = (display.textWidth(titleNm.c_str()) > 165) ? F_BODYB : F_TITLE;
+      String tFit = fitText(titleNm.c_str(), 165, tf);
       T(tFit.c_str(), tx, cy + 20, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
 
       // Subtitle (Compound: <name>)
@@ -1083,20 +1100,30 @@ void showResultList(int which) {
         subStr = strlen(items[i].compound) > 0 ? (String("Plant: ") + items[i].compound)
                                                : (String("Target: ") + items[i].enzyme);
       }
-      String sFit = fitText(subStr.c_str(), 210, F_TINY);
+      String sFit = fitText(subStr.c_str(), 165, F_TINY);
       T(sFit.c_str(), tx, cy + 44, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_L);
 
-      // Target EC box (soft rounded box)
-      int ecX = cx + 290, ecY = cy + 9, ecW = 72, ecH = 46;
+      // Box 1: Target EC box
+      int ecX = cx + 240, ecY = cy + 9, ecW = 60, ecH = 46;
       display.fillRoundRect(ecX, ecY, ecW, ecH, 8, COL_ACCENT_SOFT);
-      T("Target EC", ecX + ecW / 2, ecY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
+      T("Target", ecX + ecW / 2, ecY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
       T(items[i].enzyme, ecX + ecW / 2, ecY + 32, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
 
-      // Probability pill (dark green pill with white percentage)
-      int pbX = cx + 370, pbY = cy + 12, pbW = 66, pbH = 40;
-      display.fillRoundRect(pbX, pbY, pbW, pbH, 20, COL_PRIMARY_DARK);
+      // Box 2: pIC50 box
+      int picX = cx + 306, picY = cy + 9, picW = 66, picH = 46;
+      display.fillRoundRect(picX, picY, picW, picH, 8, COL_ACCENT_SOFT);
+      T("pIC50", picX + picW / 2, picY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
+      char pib[12];
+      if (items[i].pic50 > 0.01f) snprintf(pib, sizeof(pib), "%.2f", (double)items[i].pic50);
+      else strcpy(pib, "--");
+      T(pib, picX + picW / 2, picY + 32, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+
+      // Box 3: Probability pill (dark green pill with white percentage)
+      int pbX = cx + 378, pbY = cy + 9, pbW = 58, pbH = 46;
+      display.fillRoundRect(pbX, pbY, pbW, pbH, 8, COL_PRIMARY_DARK);
+      T("Match", pbX + pbW / 2, pbY + 14, F_TINY, COL_ACCENT, COL_PRIMARY_DARK, AL_C);
       char pb[16]; snprintf(pb, sizeof(pb), "%.0f%%", (double)items[i].prob);
-      T(pb, pbX + pbW / 2, pbY + pbH / 2, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
+      T(pb, pbX + pbW / 2, pbY + 32, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
     }
   }
 
@@ -1108,11 +1135,14 @@ void showResultList(int which) {
 // Dedicated screen for the Top 3 Gut Microbes affecting Type 2 Diabetes
 void showMicrobeList() {
   drawHeader("T2D Gut Microbes");
+
+  // Show Table Name and Sample ID at the top right header
+  T("Table: fbg_input_food.xlsx", 472, 13, F_TINY, COL_ACCENT_SOFT, TRANSP, AL_R);
   if (strlen(lastSampleId) > 0) {
     char sbuf[48]; snprintf(sbuf, sizeof(sbuf), "Sample: %s", lastSampleId);
-    T(sbuf, 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+    T(sbuf, 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
   } else {
-    T("Type 2 Diabetes Markers", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+    T("Cohort Match", 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
   }
 
   if (nMicrobes == 0) {
