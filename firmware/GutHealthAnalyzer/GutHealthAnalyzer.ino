@@ -1409,17 +1409,9 @@ void showGutList(int expandedIdx = -1) {
     // Section label
     T("Respective Gut Microbes:", cx + 16, cy + 68, F_BODYB, COL_PRIMARY_DARK, COL_WHITE, AL_L);
 
-    // Multiline full list of microbes wrapped nicely without "..."
+    // Multiline full list of microbes wrapped with complete bottom visibility (no hindering ribbon)
     const char* fullText = strlen(resGut[i].microbes) > 0 ? resGut[i].microbes : "No associated microbes listed";
-    drawWrappedText(fullText, cx + 16, cy + 82, cw - 32, 20, 5, F_BODY, COL_TEXT, COL_WHITE);
-
-    // Bottom specifications ribbon inside card
-    int sbY = cy + ch - 34;
-    display.fillRoundRect(cx + 10, sbY, cw - 20, 26, 6, COL_ACCENT_SOFT);
-    char specLeft[64];
-    snprintf(specLeft, sizeof(specLeft), "Target Enzyme: EC %s", resGut[i].ec);
-    T(specLeft, cx + 18, sbY + 13, F_TINY, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_L);
-    T("Source: food_EC_microbe_long.xlsx", cx + cw - 18, sbY + 13, F_TINY, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_R);
+    drawWrappedText(fullText, cx + 16, cy + 82, cw - 32, 21, 8, F_BODY, COL_TEXT, COL_WHITE);
 
     // Buttons at bottom
     drawPill(140, 270, 94, 38, "Collapse", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
