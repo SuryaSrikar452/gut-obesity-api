@@ -559,12 +559,24 @@ def download_by_token(token: str):
 @app.get("/device/latest-report")
 def device_latest_report(device_id: str):
     """Small summary for the ESP32 screen. Contains no CSV data and no clinical profile."""
-    r = (sb.table("analysis_reports").select("id,status,created_at,glucose_value,results")
+    r = (sb.table("analysis_reports").select("id,status,created_at,glucose_value,results,features")
          .eq("device_id", device_id).order("created_at", desc=True).limit(1).execute())
     if not r.data:
         return {"status": "empty"}
     row = r.data[0]
     res = row.get("results") or {}
+
+    raw_feats = row.get("features") or []
+    microbes_list = []
+    for f in raw_feats:
+        if isinstance(f, dict) and f.get("name"):
+            try:
+                val = float(f.get("value") or 0.0)
+                microbes_list.append({"name": str(f["name"]), "abundance": round(val, 2)})
+            except (ValueError, TypeError):
+                pass
+    microbes_list.sort(key=lambda x: x["abundance"], reverse=True)
+    top_microbes = microbes_list[:3]
 
     def _food_label(x):
         sources = x.get("sources") or []
@@ -596,6 +608,7 @@ def device_latest_report(device_id: str):
         "report_id": row["id"],
         "created_at": row["created_at"],
         "glucose": row["glucose_value"],
+        "microbes": top_microbes,
         "phyto": [
             {
                 "compound": x.get("compound"),

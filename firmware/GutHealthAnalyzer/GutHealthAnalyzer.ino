@@ -163,11 +163,13 @@ enum Screen { SC_HOME, SC_QR, SC_FAILED };
 Screen screen = SC_HOME;
 String qrError = "";
 
-// Model output shown on the dashboard (top 5 each)
+// Model output shown on the dashboard (top 5 each, top 3 microbes)
 struct ResItem { char food[48]; char compound[48]; char enzyme[24]; float prob; };
+struct MicrobeItem { char name[48]; float abundance; };
 ResItem resPhyto[5];
 ResItem resFood[5];
-int nPhyto = 0, nFood = 0;
+MicrobeItem resMicrobes[3];
+int nPhyto = 0, nFood = 0, nMicrobes = 0;
 
 
 // ============================================================
@@ -940,33 +942,48 @@ bool pollLatest(bool silent) {
   if (silent) return false;
   nPhyto = loadItems(doc["phyto"].as<JsonArray>(), 0);
   nFood = loadItems(doc["food"].as<JsonArray>(), 1);
+
+  nMicrobes = 0;
+  JsonArray ma = doc["microbes"].as<JsonArray>();
+  for (JsonObject m : ma) {
+    if (nMicrobes >= 3) break;
+    const char* nm = m["name"] | "?";
+    strlcpy(resMicrobes[nMicrobes].name, nm, sizeof(resMicrobes[nMicrobes].name));
+    resMicrobes[nMicrobes].abundance = m["abundance"] | 0.0f;
+    nMicrobes++;
+  }
   return true;
 }
 
-void drawDashCard(int x, int y, int w, int h, int kind, const char* label) {
+void drawDashCard(int x, int y, int w, int h, int kind, const char* label, const char* sublabel = "Tap to view") {
   drawCard(x, y, w, h);
-  int cx = x + w / 2, cy = y + 44;
-  display.fillCircle(cx, cy, 28, COL_ACCENT_SOFT);
-  display.drawCircle(cx, cy, 28, COL_ACCENT);
-  if (kind == 0) {  // leaf
-    display.fillEllipse(cx, cy, 10, 17, COL_PRIMARY);
-    display.drawLine(cx, cy + 16, cx, cy - 12, COL_ACCENT_SOFT);
-  } else {          // apple
-    display.fillCircle(cx - 6, cy + 3, 11, COL_RED);
-    display.fillCircle(cx + 6, cy + 3, 11, COL_RED);
-    display.fillRect(cx - 1, cy - 14, 3, 8, COL_PRIMARY_DARK);
+  int cx = x + w / 2, cy = y + 42;
+  display.fillCircle(cx, cy, 26, COL_ACCENT_SOFT);
+  display.drawCircle(cx, cy, 26, COL_ACCENT);
+  if (kind == 0) {  // leaf (phytochemicals)
+    display.fillEllipse(cx, cy, 9, 16, COL_PRIMARY);
+    display.drawLine(cx, cy + 15, cx, cy - 11, COL_ACCENT_SOFT);
+  } else if (kind == 1) { // apple (food)
+    display.fillCircle(cx - 5, cy + 3, 10, COL_RED);
+    display.fillCircle(cx + 5, cy + 3, 10, COL_RED);
+    display.fillRect(cx - 1, cy - 13, 3, 7, COL_PRIMARY_DARK);
+  } else {          // microbe / gut analysis (kind == 2)
+    display.fillRoundRect(cx - 11, cy - 5, 22, 10, 5, COL_PRIMARY_DARK);
+    display.fillCircle(cx - 5, cy - 8, 4, COL_SECONDARY);
+    display.fillCircle(cx + 5, cy + 8, 4, COL_SECONDARY);
   }
-  T(label, cx, y + 92, F_TITLE, COL_TEXT, COL_WHITE, AL_C);
-  T("Tap to view", cx, y + 114, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_C);
+  T(label, cx, y + 88, F_BODYB, COL_TEXT, COL_WHITE, AL_C);
+  T(sublabel, cx, y + 110, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_C);
 }
 
 void drawDashMenu() {
   drawHeader("Analysis Ready");
-  drawDashCard(20, 60, 215, 134, 0, "Phytochemicals");
-  drawDashCard(245, 60, 215, 134, 1, "Food");
-  drawPill(20, 210, 215, 46, "Email PDF Report", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
-  drawPill(245, 210, 215, 46, "Back to Glucose Test", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
-  T("Research use only. The PDF is sent to your registered email.", 240, 290, F_TINY, COL_TEXT_SOFT, COL_BG, AL_C);
+  drawDashCard(16, 58, 140, 136, 2, "Gut Analysis", "Top microbes");
+  drawDashCard(170, 58, 140, 136, 1, "Food", "Top foods");
+  drawDashCard(324, 58, 140, 136, 0, "Phytochemicals", "Active targets");
+  drawPill(20, 208, 215, 44, "Email PDF Report", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
+  drawPill(245, 208, 215, 44, "Back to Glucose Test", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+  T("Research use only. The PDF is sent to your registered email.", 240, 286, F_TINY, COL_TEXT_SOFT, COL_BG, AL_C);
 }
 
 // Food names arrive in many shapes ("RAW_APPLE", "apple, raw"): show them as tidy Title Case.
@@ -1054,9 +1071,84 @@ void showResultList(int which) {
   drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
 }
 
+// Dedicated screen for the Top 3 Gut Microbes
+void showMicrobeList() {
+  drawHeader("Gut Microbiome Analysis");
+  T("Top 3 Taxa", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+
+  if (nMicrobes == 0) {
+    drawCard(20, 54, 440, 200);
+    T("No microbiome data available", 240, 150, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
+  } else {
+    for (int i = 0; i < nMicrobes; i++) {
+      int cx = 18, cy = 52 + i * 70, cw = 444, ch = 64;
+      display.fillRoundRect(cx, cy, cw, ch, 10, COL_WHITE);
+      display.drawRoundRect(cx, cy, cw, ch, 10, COL_BORDER);
+
+      // Rank badge (green rounded box on left)
+      int numX = cx + 6, numY = cy + 6, numW = 28, numH = ch - 12;
+      display.fillRoundRect(numX, numY, numW, numH, 6, COL_ACCENT_SOFT);
+      char nb[4]; snprintf(nb, sizeof(nb), "%d", i + 1);
+      T(nb, numX + numW / 2, numY + numH / 2, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+
+      // Icon circle (microbe rod emblem)
+      int iconX = cx + 50, iconY = cy + ch / 2;
+      display.fillCircle(iconX, iconY, 13, COL_ACCENT_SOFT);
+      display.fillRoundRect(iconX - 6, iconY - 3, 12, 6, 3, COL_SECONDARY);
+      display.fillCircle(iconX - 3, iconY - 5, 2, COL_PRIMARY_DARK);
+      display.fillCircle(iconX + 3, iconY + 5, 2, COL_PRIMARY_DARK);
+
+      // Microbe Name (clean Title Case, e.g. "Roseburia Intestinalis")
+      int tx = cx + 72;
+      String name = prettyName(resMicrobes[i].name);
+      display.setFont(F_TITLE);
+      display.setTextSize(1);
+      const lgfx::IFont* tf = (display.textWidth(name.c_str()) > 210) ? F_BODYB : F_TITLE;
+      String tFit = fitText(name.c_str(), 210, tf);
+      T(tFit.c_str(), tx, cy + 20, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
+
+      // Subtitle
+      T("Dominant Gut Taxon", tx, cy + 44, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_L);
+
+      // Abundance tag box
+      int ecX = cx + 290, ecY = cy + 9, ecW = 72, ecH = 46;
+      display.fillRoundRect(ecX, ecY, ecW, ecH, 8, COL_ACCENT_SOFT);
+      T("Abundance", ecX + ecW / 2, ecY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
+      char rk[12]; snprintf(rk, sizeof(rk), "#%d Taxon", i + 1);
+      T(rk, ecX + ecW / 2, ecY + 32, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+
+      // Abundance percentage pill
+      int pbX = cx + 370, pbY = cy + 12, pbW = 66, pbH = 40;
+      display.fillRoundRect(pbX, pbY, pbW, pbH, 20, COL_PRIMARY_DARK);
+      char pb[16];
+      if (resMicrobes[i].abundance >= 10.0f) {
+        snprintf(pb, sizeof(pb), "%.1f%%", (double)resMicrobes[i].abundance);
+      } else {
+        snprintf(pb, sizeof(pb), "%.2f%%", (double)resMicrobes[i].abundance);
+      }
+      T(pb, pbX + pbW / 2, pbY + pbH / 2, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
+    }
+  }
+
+  // Bottom buttons
+  drawPill(140, 270, 94, 38, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+  drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
+}
+
 // Returns true if the user chose "Done" (leave results), false for "Back" (to the dashboard menu).
 bool resultListLoop(int which) {
   showResultList(which);
+  waitTouchRelease();
+  while (true) {
+    int tx, ty;
+    waitTap(tx, ty);
+    if (hitLogo(tx, ty) || inRect(tx, ty, 140, 270, 94, 38)) { waitTouchRelease(); return false; }
+    if (inRect(tx, ty, 246, 270, 94, 38)) { waitTouchRelease(); return true; }
+  }
+}
+
+bool microbeListLoop() {
+  showMicrobeList();
   waitTouchRelease();
   while (true) {
     int tx, ty;
@@ -1106,10 +1198,11 @@ void runResultsFlow() {
     waitTouchRelease();
     int tx, ty;
     waitTap(tx, ty);
-    if (inRect(tx, ty, 20, 60, 215, 134)) { waitTouchRelease(); leave = resultListLoop(0); }
-    else if (inRect(tx, ty, 245, 60, 215, 134)) { waitTouchRelease(); leave = resultListLoop(1); }
-    else if (inRect(tx, ty, 20, 210, 215, 46)) { waitTouchRelease(); emailReport(); }
-    else if (hitLogo(tx, ty) || inRect(tx, ty, 245, 210, 215, 46)) { waitTouchRelease(); leave = true; }
+    if (inRect(tx, ty, 16, 58, 140, 136)) { waitTouchRelease(); leave = microbeListLoop(); }
+    else if (inRect(tx, ty, 170, 58, 140, 136)) { waitTouchRelease(); leave = resultListLoop(1); }
+    else if (inRect(tx, ty, 324, 58, 140, 136)) { waitTouchRelease(); leave = resultListLoop(0); }
+    else if (inRect(tx, ty, 20, 208, 215, 44)) { waitTouchRelease(); emailReport(); }
+    else if (hitLogo(tx, ty) || inRect(tx, ty, 245, 208, 215, 44)) { waitTouchRelease(); leave = true; }
   }
   showHome(true);
 }
