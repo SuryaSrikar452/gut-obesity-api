@@ -165,7 +165,13 @@ String qrError = "";
 
 // Model output shown on the dashboard (top 5 each, top 3 microbes)
 struct ResItem { char food[48]; char compound[48]; char enzyme[24]; float prob; };
-struct MicrobeItem { char name[48]; float abundance; };
+struct MicrobeItem {
+  char name[48];
+  char tag[16];
+  char subtitle[48];
+  float abundance;
+  bool is_risk;
+};
 ResItem resPhyto[5];
 ResItem resFood[5];
 MicrobeItem resMicrobes[3];
@@ -949,7 +955,10 @@ bool pollLatest(bool silent) {
     if (nMicrobes >= 3) break;
     const char* nm = m["name"] | "?";
     strlcpy(resMicrobes[nMicrobes].name, nm, sizeof(resMicrobes[nMicrobes].name));
+    strlcpy(resMicrobes[nMicrobes].tag, m["tag"] | "Marker", sizeof(resMicrobes[nMicrobes].tag));
+    strlcpy(resMicrobes[nMicrobes].subtitle, m["subtitle"] | "T2D Gut Biomarker", sizeof(resMicrobes[nMicrobes].subtitle));
     resMicrobes[nMicrobes].abundance = m["abundance"] | 0.0f;
+    resMicrobes[nMicrobes].is_risk = m["is_risk"] | false;
     nMicrobes++;
   }
   return true;
@@ -978,7 +987,7 @@ void drawDashCard(int x, int y, int w, int h, int kind, const char* label, const
 
 void drawDashMenu() {
   drawHeader("Analysis Ready");
-  drawDashCard(16, 58, 140, 136, 2, "Gut Analysis", "Top microbes");
+  drawDashCard(16, 58, 140, 136, 2, "T2D Microbes", "Affecting T2D");
   drawDashCard(170, 58, 140, 136, 1, "Food", "Top foods");
   drawDashCard(324, 58, 140, 136, 0, "Phytochemicals", "Active targets");
   drawPill(20, 208, 215, 44, "Email PDF Report", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
@@ -1071,10 +1080,10 @@ void showResultList(int which) {
   drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
 }
 
-// Dedicated screen for the Top 3 Gut Microbes
+// Dedicated screen for the Top 3 Gut Microbes affecting Type 2 Diabetes
 void showMicrobeList() {
-  drawHeader("Gut Microbiome Analysis");
-  T("Top 3 Taxa", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+  drawHeader("T2D Gut Microbes");
+  T("Type 2 Diabetes Markers", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
 
   if (nMicrobes == 0) {
     drawCard(20, 54, 440, 200);
@@ -1091,14 +1100,19 @@ void showMicrobeList() {
       char nb[4]; snprintf(nb, sizeof(nb), "%d", i + 1);
       T(nb, numX + numW / 2, numY + numH / 2, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
 
-      // Icon circle (microbe rod emblem)
+      // Icon circle (microbe rod emblem, colored by risk vs protective)
       int iconX = cx + 50, iconY = cy + ch / 2;
-      display.fillCircle(iconX, iconY, 13, COL_ACCENT_SOFT);
-      display.fillRoundRect(iconX - 6, iconY - 3, 12, 6, 3, COL_SECONDARY);
-      display.fillCircle(iconX - 3, iconY - 5, 2, COL_PRIMARY_DARK);
-      display.fillCircle(iconX + 3, iconY + 5, 2, COL_PRIMARY_DARK);
+      bool isRisk = resMicrobes[i].is_risk;
+      uint16_t iconBg = isRisk ? COL_WARN_BG : COL_ACCENT_SOFT;
+      uint16_t iconFg = isRisk ? COL_RED : COL_SECONDARY;
+      uint16_t dotFg  = isRisk ? COL_RED : COL_PRIMARY_DARK;
 
-      // Microbe Name (clean Title Case, e.g. "Roseburia Intestinalis")
+      display.fillCircle(iconX, iconY, 13, iconBg);
+      display.fillRoundRect(iconX - 6, iconY - 3, 12, 6, 3, iconFg);
+      display.fillCircle(iconX - 3, iconY - 5, 2, dotFg);
+      display.fillCircle(iconX + 3, iconY + 5, 2, dotFg);
+
+      // Microbe Name (clean Title Case, e.g. "Clostridium Bolteae")
       int tx = cx + 72;
       String name = prettyName(resMicrobes[i].name);
       display.setFont(F_TITLE);
@@ -1107,15 +1121,17 @@ void showMicrobeList() {
       String tFit = fitText(name.c_str(), 210, tf);
       T(tFit.c_str(), tx, cy + 20, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
 
-      // Subtitle
-      T("Dominant Gut Taxon", tx, cy + 44, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_L);
+      // Subtitle (T2D role / clinical association)
+      String subStr = fitText(resMicrobes[i].subtitle, 210, F_TINY);
+      T(subStr.c_str(), tx, cy + 44, F_TINY, isRisk ? COL_RED : COL_TEXT_SOFT, COL_WHITE, AL_L);
 
-      // Abundance tag box
+      // T2D Role Tag box
       int ecX = cx + 290, ecY = cy + 9, ecW = 72, ecH = 46;
-      display.fillRoundRect(ecX, ecY, ecW, ecH, 8, COL_ACCENT_SOFT);
-      T("Abundance", ecX + ecW / 2, ecY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
-      char rk[12]; snprintf(rk, sizeof(rk), "#%d Taxon", i + 1);
-      T(rk, ecX + ecW / 2, ecY + 32, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+      display.fillRoundRect(ecX, ecY, ecW, ecH, 8, isRisk ? COL_WARN_BG : COL_ACCENT_SOFT);
+      T("T2D Role", ecX + ecW / 2, ecY + 14, F_TINY, isRisk ? COL_RED : COL_TEXT_SOFT,
+        isRisk ? COL_WARN_BG : COL_ACCENT_SOFT, AL_C);
+      T(resMicrobes[i].tag, ecX + ecW / 2, ecY + 32, F_BODYB, isRisk ? COL_RED : COL_PRIMARY_DARK,
+        isRisk ? COL_WARN_BG : COL_ACCENT_SOFT, AL_C);
 
       // Abundance percentage pill
       int pbX = cx + 370, pbY = cy + 12, pbW = 66, pbH = 40;

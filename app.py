@@ -556,6 +556,61 @@ def download_by_token(token: str):
 # ============================================================
 # Device-facing summary + web pages
 # ============================================================
+T2D_SPECIES_PROFILE = {
+    "Clostridium_bolteae": {
+        "role": "Risk Driver", "tag": "Risk Factor", "sub": "T2D Marker: Elevated FBG",
+        "is_risk": True, "weight": 1.35
+    },
+    "Bifidobacterium_longum": {
+        "role": "Protective Probiotic", "tag": "Protective", "sub": "Protective: Insulin Sensitivity",
+        "is_risk": False, "weight": 1.30
+    },
+    "Prevotella_copri": {
+        "role": "Insulin Resistance", "tag": "BCAA Risk", "sub": "T2D Driver: High BCAA & Ins. Res.",
+        "is_risk": True, "weight": 1.25
+    },
+    "Roseburia_intestinalis": {
+        "role": "Protective SCFA", "tag": "Protective", "sub": "Protective: GLP-1 & Gut Barrier",
+        "is_risk": False, "weight": 1.20
+    },
+    "Eggerthella_lenta": {
+        "role": "Inflammatory Biomarker", "tag": "Inflam. Risk", "sub": "T2D Marker: Systemic Inflam.",
+        "is_risk": True, "weight": 1.18
+    },
+    "Dorea_formicigenerans": {
+        "role": "Glycemic Dysbiosis", "tag": "Risk Factor", "sub": "T2D Marker: High Fasting Glucose",
+        "is_risk": True, "weight": 1.15
+    },
+    "Bacteroides_vulgatus": {
+        "role": "Metabolic Dysbiosis", "tag": "Risk Factor", "sub": "T2D Marker: High HbA1c Dysbiosis",
+        "is_risk": True, "weight": 1.12
+    },
+    "Eubacterium_rectale": {
+        "role": "Beneficial SCFA", "tag": "Protective", "sub": "Protective: Butyrate Producer",
+        "is_risk": False, "weight": 1.10
+    },
+    "Streptococcus_salivarius": {
+        "role": "Oral/Gut Dysbiosis", "tag": "Marker", "sub": "T2D Marker: Mucosal Dysbiosis",
+        "is_risk": True, "weight": 1.08
+    },
+    "Haemophilus_parainfluenzae": {
+        "role": "Opportunistic", "tag": "Risk Factor", "sub": "T2D Marker: Glucose Dysregulation",
+        "is_risk": True, "weight": 1.06
+    },
+    "Bacteroides_thetaiotaomicron": {
+        "role": "Protective Commensal", "tag": "Protective", "sub": "Protective: Barrier Integrity",
+        "is_risk": False, "weight": 1.05
+    },
+    "Bacteroides_ovatus": {
+        "role": "Metabolic Commensal", "tag": "Commensal", "sub": "Metabolic: Polysaccharide Digestion",
+        "is_risk": False, "weight": 1.03
+    },
+    "Clostridium_hathewayi": {
+        "role": "Opportunistic Pathogen", "tag": "Risk Factor", "sub": "T2D Marker: Endotoxin Burden",
+        "is_risk": True, "weight": 1.05
+    },
+}
+
 @app.get("/device/latest-report")
 def device_latest_report(device_id: str):
     """Small summary for the ESP32 screen. Contains no CSV data and no clinical profile."""
@@ -572,11 +627,35 @@ def device_latest_report(device_id: str):
         if isinstance(f, dict) and f.get("name"):
             try:
                 val = float(f.get("value") or 0.0)
-                microbes_list.append({"name": str(f["name"]), "abundance": round(val, 2)})
+                sp_name = str(f["name"])
+                prof = T2D_SPECIES_PROFILE.get(sp_name, {
+                    "role": "Gut Commensal", "tag": "Commensal", "sub": "Metabolic Commensal",
+                    "is_risk": False, "weight": 1.0
+                })
+                impact_score = val * prof["weight"]
+                microbes_list.append({
+                    "name": sp_name,
+                    "abundance": round(val, 2),
+                    "role": prof["role"],
+                    "tag": prof["tag"],
+                    "subtitle": prof["sub"],
+                    "is_risk": prof["is_risk"],
+                    "score": impact_score
+                })
             except (ValueError, TypeError):
                 pass
-    microbes_list.sort(key=lambda x: x["abundance"], reverse=True)
-    top_microbes = microbes_list[:3]
+    microbes_list.sort(key=lambda x: x["score"], reverse=True)
+    top_microbes = [
+        {
+            "name": m["name"],
+            "abundance": m["abundance"],
+            "role": m["role"],
+            "tag": m["tag"],
+            "subtitle": m["subtitle"],
+            "is_risk": m["is_risk"],
+        }
+        for m in microbes_list[:3]
+    ]
 
     def _food_label(x):
         sources = x.get("sources") or []
