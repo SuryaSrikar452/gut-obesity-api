@@ -618,8 +618,12 @@ def _load_ec_microbe_map():
     import pandas as pd
     base_dir = os.path.dirname(os.path.abspath(__file__))
     for fname in ["food_EC_microbe_long.xlsx", "phyto_EC_microbe_long.xlsx"]:
-        path = os.path.join(base_dir, fname) if not os.path.exists(fname) else fname
-        if not os.path.exists(path):
+        path = None
+        for candidate in [os.path.join(base_dir, "data", fname), os.path.join(base_dir, fname)]:
+            if os.path.exists(candidate):
+                path = candidate
+                break
+        if not path:
             continue
         try:
             try:

@@ -19,13 +19,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _data_path(name):
-    """Look in recommender_data/ first, then the repo root."""
-    for d in (os.path.join(_HERE, "recommender_data"), _HERE):
+    """Look in data/ first, then recommender_data/, then the repo root."""
+    for d in (os.path.join(_HERE, "data"), os.path.join(_HERE, "recommender_data"), _HERE):
         f = os.path.join(d, name)
         if os.path.exists(f):
             return f
     raise FileNotFoundError(
-        f"{name} not found. Add the 4 xlsx files to a 'recommender_data' folder in the repo."
+        f"{name} not found. Add the xlsx files to a 'data' folder in the repo."
     )
 CLIN = ["Age", "BMI", "FBG_mgdL"]
 IDS = ["Sample_ID", "Table_S1_Sample_ID"]
