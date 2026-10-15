@@ -1012,6 +1012,8 @@ int loadItems(JsonArray a, int which) {
     }
   }
   return n;
+}
+
 // silent = true only records the current report id. Returns true when a NEW completed report was loaded.
 bool pollLatest(bool silent) {
   DynamicJsonDocument doc(6144);
