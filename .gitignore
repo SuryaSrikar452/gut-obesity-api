@@ -5,3 +5,4 @@ __pycache__/
 venv/
 .venv/
 .vscode/
+/EC_Phytochemical_pIC50_12_rows_t2d.xlsx
