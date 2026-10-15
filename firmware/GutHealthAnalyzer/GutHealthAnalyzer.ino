@@ -164,7 +164,7 @@ Screen screen = SC_HOME;
 String qrError = "";
 
 // Model output shown on the dashboard (top 5 each, top 3 microbes)
-struct ResItem { char food[48]; char compound[48]; char enzyme[24]; float prob; float pic50; };
+struct ResItem { char food[64]; char compound[160]; char enzyme[24]; float prob; float pic50; };
 struct MicrobeItem {
   char name[48];
   char tag[16];
@@ -250,6 +250,51 @@ String fitText(const char* s, int maxW, const lgfx::IFont* f) {
     t.remove(t.length() - 1);
   }
   return t;
+}
+
+void drawWrappedText(const char* s, int x, int startY, int maxW, int lineH, int maxLines,
+                     const lgfx::IFont* f, uint16_t fg, uint32_t bg = TRANSP) {
+  display.setFont(f);
+  display.setTextSize(1);
+  if (bg == TRANSP) display.setTextColor(fg);
+  else display.setTextColor(fg, (uint16_t)bg);
+  display.setTextDatum(lgfx::textdatum::top_left);
+
+  String text = s;
+  text.trim();
+  int lineCount = 0;
+  int currentY = startY;
+
+  while (text.length() > 0 && lineCount < maxLines) {
+    if (display.textWidth(text.c_str()) <= maxW) {
+      display.drawString(text.c_str(), x, currentY);
+      break;
+    }
+    int splitIdx = -1;
+    for (int i = 0; i < (int)text.length(); i++) {
+      String sub = text.substring(0, i);
+      if (display.textWidth(sub.c_str()) > maxW) break;
+      if (text[i] == ' ' || text[i] == ',') splitIdx = i;
+    }
+    if (splitIdx <= 0) {
+      for (int i = text.length() - 1; i >= 1; i--) {
+        if (display.textWidth(text.substring(0, i).c_str()) <= maxW) {
+          splitIdx = i;
+          break;
+        }
+      }
+    }
+    if (splitIdx <= 0) splitIdx = 1;
+
+    String lineStr = text.substring(0, splitIdx + 1);
+    lineStr.trim();
+    display.drawString(lineStr.c_str(), x, currentY);
+    lineCount++;
+    currentY += lineH;
+
+    text = text.substring(splitIdx + 1);
+    text.trim();
+  }
 }
 
 uint16_t mixRGB(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2, float t) {
@@ -1065,10 +1110,12 @@ String prettyName(const char* s) {
   return o;
 }
 
-void showResultList(int which) {
+void showResultList(int which, int expandedIdx = -1) {
   ResItem* items = which ? resFood : resPhyto;
   int n = which ? nFood : nPhyto;
-  drawHeader(which ? "Food Recommendations" : "Phytochemicals");
+
+  // Use "Food Guide" to avoid overlap with top-right status text
+  drawHeader(which ? "Food Guide" : "Phytochemicals");
 
   // Show Table Name and Sample ID + Glucose at the top right header
   const char* tblName = which ? "Table: IC50_Matches_food.xlsx" : "Table: EC_Phyto_pIC50_12_rows.xlsx";
@@ -1084,60 +1131,149 @@ void showResultList(int which) {
   if (n == 0) {
     drawCard(20, 54, 440, 200);
     T("No recommendations available", 240, 150, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
-  } else {
-    int maxDisplay = n > 3 ? 3 : n;
-    for (int i = 0; i < maxDisplay; i++) {
-      int cx = 18, cy = 52 + i * 70, cw = 444, ch = 64;
-      display.fillRoundRect(cx, cy, cw, ch, 10, COL_WHITE);
-      display.drawRoundRect(cx, cy, cw, ch, 10, COL_BORDER);
+    drawPill(140, 270, 94, 38, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+    drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
+    return;
+  }
 
-      // Index badge (green rounded box on left)
-      int numX = cx + 6, numY = cy + 6, numW = 28, numH = ch - 12;
-      display.fillRoundRect(numX, numY, numW, numH, 6, COL_ACCENT_SOFT);
-      char nb[4]; snprintf(nb, sizeof(nb), "%d", i + 1);
-      T(nb, numX + numW / 2, numY + numH / 2, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+  // EXPANDED VIEW: When an individual recommendation is tapped
+  if (expandedIdx >= 0 && expandedIdx < n) {
+    int i = expandedIdx;
+    int cx = 18, cy = 52, cw = 444, ch = 208;
+    display.fillRoundRect(cx + 2, cy + 3, cw, ch, 12, COL_SHADOW);
+    display.fillRoundRect(cx, cy, cw, ch, 12, COL_WHITE);
+    display.drawRoundRect(cx, cy, cw, ch, 12, COL_PRIMARY);
 
-      // Icon circle (leaf/food emblem)
-      int iconX = cx + 48, iconY = cy + ch / 2;
-      display.fillCircle(iconX, iconY, 13, COL_ACCENT_SOFT);
+    // Index badge
+    int numX = cx + 10, numY = cy + 10, numW = 32, numH = 38;
+    display.fillRoundRect(numX, numY, numW, numH, 8, COL_ACCENT_SOFT);
+    char nb[4]; snprintf(nb, sizeof(nb), "%d", i + 1);
+    T(nb, numX + numW / 2, numY + numH / 2, F_TITLE, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+
+    // Icon circle (leaf/food emblem)
+    int iconX = cx + 58, iconY = cy + 29;
+    display.fillCircle(iconX, iconY, 15, COL_ACCENT_SOFT);
+    if (which) {
+      display.fillCircle(iconX - 3, iconY + 1, 5, COL_RED);
+      display.fillCircle(iconX + 3, iconY + 1, 5, COL_RED);
+      display.fillRect(iconX - 1, iconY - 6, 2, 4, COL_PRIMARY_DARK);
+    } else {
       display.fillCircle(iconX, iconY + 1, 6, COL_SECONDARY);
       display.fillTriangle(iconX, iconY - 8, iconX - 5, iconY, iconX + 5, iconY, COL_SECONDARY);
-
-      // Primary Title (Food name highlighted prominently)
-      int tx = cx + 68;
-      String titleNm = prettyName(items[i].food);
-      display.setFont(F_TITLE);
-      display.setTextSize(1);
-      const lgfx::IFont* tf = (display.textWidth(titleNm.c_str()) > 210) ? F_BODYB : F_TITLE;
-      String tFit = fitText(titleNm.c_str(), 210, tf);
-      T(tFit.c_str(), tx, cy + 20, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
-
-      // Subtitle (Compound: <name>)
-      String subStr;
-      if (which) {
-        subStr = String("Compound: ") + items[i].compound;
-      } else {
-        subStr = strlen(items[i].compound) > 0 ? (String("Plant: ") + items[i].compound)
-                                               : (String("EC: ") + items[i].enzyme);
-      }
-      String sFit = fitText(subStr.c_str(), 210, F_TINY);
-      T(sFit.c_str(), tx, cy + 44, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_L);
-
-      // Box 1: EC box (displays "EC" instead of "Target")
-      int ecX = cx + 288, ecY = cy + 9, ecW = 72, ecH = 46;
-      display.fillRoundRect(ecX, ecY, ecW, ecH, 8, COL_ACCENT_SOFT);
-      T("EC", ecX + ecW / 2, ecY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
-      T(items[i].enzyme, ecX + ecW / 2, ecY + 32, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
-
-      // Box 2: pIC50 box (prominently showing pIC50 value)
-      int picX = cx + 366, picY = cy + 9, picW = 72, picH = 46;
-      display.fillRoundRect(picX, picY, picW, picH, 8, COL_PRIMARY_DARK);
-      T("pIC50", picX + picW / 2, picY + 14, F_TINY, COL_ACCENT, COL_PRIMARY_DARK, AL_C);
-      char pib[12];
-      if (items[i].pic50 > 0.01f) snprintf(pib, sizeof(pib), "%.2f", (double)items[i].pic50);
-      else strcpy(pib, "--");
-      T(pib, picX + picW / 2, picY + 32, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
     }
+
+    // Primary Title (Full Food / Plant name)
+    int tx = cx + 80;
+    String titleNm = prettyName(items[i].food);
+    display.setFont(F_TITLE);
+    display.setTextSize(1);
+    const lgfx::IFont* tf = (display.textWidth(titleNm.c_str()) > 200) ? F_BODYB : F_TITLE;
+    String tFit = fitText(titleNm.c_str(), 200, tf);
+    T(tFit.c_str(), tx, cy + 28, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
+
+    // EC Box
+    int ecX = cx + 288, ecY = cy + 10, ecW = 72, ecH = 40;
+    display.fillRoundRect(ecX, ecY, ecW, ecH, 8, COL_ACCENT_SOFT);
+    T("EC", ecX + ecW / 2, ecY + 12, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
+    T(items[i].enzyme, ecX + ecW / 2, ecY + 28, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+
+    // pIC50 Box
+    int picX = cx + 366, picY = cy + 10, picW = 72, picH = 40;
+    display.fillRoundRect(picX, picY, picW, picH, 8, COL_PRIMARY_DARK);
+    T("pIC50", picX + picW / 2, picY + 12, F_TINY, COL_ACCENT, COL_PRIMARY_DARK, AL_C);
+    char pib[12];
+    if (items[i].pic50 > 0.01f) snprintf(pib, sizeof(pib), "%.2f", (double)items[i].pic50);
+    else strcpy(pib, "--");
+    T(pib, picX + picW / 2, picY + 28, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
+
+    // Divider line
+    display.drawFastHLine(cx + 12, cy + 54, cw - 24, COL_BORDER);
+
+    // Section label
+    const char* secHdr = which ? "Bioactive Compounds & Dietary Sources:"
+                               : "Medicinal Plant Sources & Bioactive Targets:";
+    T(secHdr, cx + 16, cy + 68, F_BODYB, COL_PRIMARY_DARK, COL_WHITE, AL_L);
+
+    // Multiline full text wrapped nicely without "..."
+    const char* fullText = strlen(items[i].compound) > 0 ? items[i].compound : "Reference target compounds";
+    drawWrappedText(fullText, cx + 16, cy + 82, cw - 32, 20, 4, F_BODY, COL_TEXT, COL_WHITE);
+
+    // Bottom specifications ribbon inside card
+    int sbY = cy + ch - 34;
+    display.fillRoundRect(cx + 10, sbY, cw - 20, 26, 6, COL_ACCENT_SOFT);
+    char specLeft[64];
+    snprintf(specLeft, sizeof(specLeft), "Target Enzyme: EC %s", items[i].enzyme);
+    T(specLeft, cx + 18, sbY + 13, F_TINY, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_L);
+
+    char specRight[48];
+    snprintf(specRight, sizeof(specRight), "Binding Affinity: %s pIC50", pib);
+    T(specRight, cx + cw - 18, sbY + 13, F_TINY, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_R);
+
+    // Buttons at bottom
+    drawPill(140, 270, 94, 38, "Collapse", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+    drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
+    return;
+  }
+
+  // COMPACT VIEW: Shows all 3 recommendations
+  int maxDisplay = n > 3 ? 3 : n;
+  for (int i = 0; i < maxDisplay; i++) {
+    int cx = 18, cy = 52 + i * 70, cw = 444, ch = 64;
+    display.fillRoundRect(cx, cy, cw, ch, 10, COL_WHITE);
+    display.drawRoundRect(cx, cy, cw, ch, 10, COL_BORDER);
+
+    // Index badge (green rounded box on left)
+    int numX = cx + 6, numY = cy + 6, numW = 28, numH = ch - 12;
+    display.fillRoundRect(numX, numY, numW, numH, 6, COL_ACCENT_SOFT);
+    char nb[4]; snprintf(nb, sizeof(nb), "%d", i + 1);
+    T(nb, numX + numW / 2, numY + numH / 2, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+
+    // Icon circle (leaf/food emblem)
+    int iconX = cx + 48, iconY = cy + ch / 2;
+    display.fillCircle(iconX, iconY, 13, COL_ACCENT_SOFT);
+    if (which) {
+      display.fillCircle(iconX - 3, iconY + 1, 5, COL_RED);
+      display.fillCircle(iconX + 3, iconY + 1, 5, COL_RED);
+      display.fillRect(iconX - 1, iconY - 6, 2, 4, COL_PRIMARY_DARK);
+    } else {
+      display.fillCircle(iconX, iconY + 1, 6, COL_SECONDARY);
+      display.fillTriangle(iconX, iconY - 8, iconX - 5, iconY, iconX + 5, iconY, COL_SECONDARY);
+    }
+
+    // Primary Title (Food name highlighted prominently)
+    int tx = cx + 68;
+    String titleNm = prettyName(items[i].food);
+    display.setFont(F_TITLE);
+    display.setTextSize(1);
+    const lgfx::IFont* tf = (display.textWidth(titleNm.c_str()) > 210) ? F_BODYB : F_TITLE;
+    String tFit = fitText(titleNm.c_str(), 210, tf);
+    T(tFit.c_str(), tx, cy + 20, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
+
+    // Subtitle (Compound: <name>)
+    String subStr;
+    if (which) {
+      subStr = String("Compound: ") + items[i].compound;
+    } else {
+      subStr = strlen(items[i].compound) > 0 ? (String("Plant: ") + items[i].compound)
+                                             : (String("EC: ") + items[i].enzyme);
+    }
+    String sFit = fitText(subStr.c_str(), 210, F_TINY);
+    T(sFit.c_str(), tx, cy + 44, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_L);
+
+    // Box 1: EC box (displays "EC" instead of "Target")
+    int ecX = cx + 288, ecY = cy + 9, ecW = 72, ecH = 46;
+    display.fillRoundRect(ecX, ecY, ecW, ecH, 8, COL_ACCENT_SOFT);
+    T("EC", ecX + ecW / 2, ecY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
+    T(items[i].enzyme, ecX + ecW / 2, ecY + 32, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+
+    // Box 2: pIC50 box (prominently showing pIC50 value)
+    int picX = cx + 366, picY = cy + 9, picW = 72, picH = 46;
+    display.fillRoundRect(picX, picY, picW, picH, 8, COL_PRIMARY_DARK);
+    T("pIC50", picX + picW / 2, picY + 14, F_TINY, COL_ACCENT, COL_PRIMARY_DARK, AL_C);
+    char pib[12];
+    if (items[i].pic50 > 0.01f) snprintf(pib, sizeof(pib), "%.2f", (double)items[i].pic50);
+    else strcpy(pib, "--");
+    T(pib, picX + picW / 2, picY + 32, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
   }
 
   // Bottom buttons
@@ -1227,13 +1363,56 @@ void showMicrobeList() {
 
 // Returns true if the user chose "Done" (leave results), false for "Back" (to the dashboard menu).
 bool resultListLoop(int which) {
-  showResultList(which);
+  int expandedIdx = -1;
+  showResultList(which, expandedIdx);
   waitTouchRelease();
   while (true) {
     int tx, ty;
     waitTap(tx, ty);
-    if (hitLogo(tx, ty) || inRect(tx, ty, 140, 270, 94, 38)) { waitTouchRelease(); return false; }
-    if (inRect(tx, ty, 246, 270, 94, 38)) { waitTouchRelease(); return true; }
+    if (hitLogo(tx, ty)) {
+      waitTouchRelease();
+      if (expandedIdx != -1) {
+        expandedIdx = -1;
+        showResultList(which, expandedIdx);
+        continue;
+      }
+      return false;
+    }
+    // Done button (246, 270)
+    if (inRect(tx, ty, 246, 270, 94, 38)) {
+      waitTouchRelease();
+      return true;
+    }
+    // Back / Collapse button (140, 270)
+    if (inRect(tx, ty, 140, 270, 94, 38)) {
+      waitTouchRelease();
+      if (expandedIdx != -1) {
+        expandedIdx = -1;
+        showResultList(which, expandedIdx);
+        continue;
+      }
+      return false;
+    }
+    // Card tap handling:
+    if (expandedIdx != -1) {
+      // Tap on expanded card collapses it back to all recommendations
+      if (inRect(tx, ty, 18, 52, 444, 208)) {
+        waitTouchRelease();
+        expandedIdx = -1;
+        showResultList(which, expandedIdx);
+        continue;
+      }
+    } else {
+      // Tap on any of the 3 cards expands that card and disperses the other 2
+      for (int i = 0; i < 3; i++) {
+        if (inRect(tx, ty, 18, 52 + i * 70, 444, 64)) {
+          waitTouchRelease();
+          expandedIdx = i;
+          showResultList(which, expandedIdx);
+          break;
+        }
+      }
+    }
   }
 }
 
