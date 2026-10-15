@@ -708,10 +708,11 @@ void profileScreen() {
 // ============================================================
 // GLUCOSE HOME PAGE (the page the device lands on after the first setup)
 // ============================================================
-const int HB_START_X = 20, HB_LAST_X = 250, HB_Y = 216, HB_W = 210, HB_H = 46;
+const int HB_START_X = 20, HB_ENTER_X = 170, HB_LAST_X = 320, HB_Y = 216, HB_W = 140, HB_H = 46;
 const int HB_EDIT_X = 12, HB_EDIT_Y = 276, HB_EDIT_W = 140, HB_EDIT_H = 34;
 const int HB_LOGOUT_X = 328, HB_LOGOUT_Y = 276, HB_LOGOUT_W = 140, HB_LOGOUT_H = 34;
 void runLogoutFlow();
+void runManualGlucoseFlow();
 
 void fetchLatestGlucose() {
   latestId = "";
@@ -733,7 +734,7 @@ void showHome(bool refresh) {
   display.drawCircle(66, 104, 30, COL_ACCENT);
   drawDrop(66, 96, 12, COL_RED);
   T("Ready for a new test", 112, 88, F_TITLE, COL_TEXT, COL_WHITE);
-  T(adsOk ? "Apply a drop of blood to the strip" : "Glucose sensor not found", 112, 118, F_BODY,
+  T(adsOk ? "Apply a drop of blood to the strip" : "Sensor not found - enter a value", 112, 118, F_BODY,
     adsOk ? COL_TEXT_SOFT : COL_RED, COL_WHITE);
   display.drawFastHLine(36, 146, 408, COL_BORDER);
   char b[64];
@@ -746,6 +747,7 @@ void showHome(bool refresh) {
   }
   if (adsOk) drawPill(HB_START_X, HB_Y, HB_W, HB_H, "Start Test", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
   else       drawPill(HB_START_X, HB_Y, HB_W, HB_H, "Start Test", COL_BORDER, COL_TEXT_SOFT, COL_BORDER);
+  drawPill(HB_ENTER_X, HB_Y, HB_W, HB_H, "Enter Value", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
   if (latestId.length()) drawPill(HB_LAST_X, HB_Y, HB_W, HB_H, "Use Latest", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
   else                   drawPill(HB_LAST_X, HB_Y, HB_W, HB_H, "Use Latest", COL_BORDER, COL_TEXT_SOFT, COL_BORDER);
   drawPill(HB_EDIT_X, HB_EDIT_Y, HB_EDIT_W, HB_EDIT_H, "Edit Profile", COL_WHITE, COL_PRIMARY_DARK, COL_BORDER);
@@ -756,6 +758,9 @@ void handleHomeTouch(int tx, int ty) {
   if (adsOk && inRect(tx, ty, HB_START_X, HB_Y, HB_W, HB_H)) {
     waitTouchRelease();
     runGlucoseFlow();
+  } else if (inRect(tx, ty, HB_ENTER_X, HB_Y, HB_W, HB_H)) {
+    waitTouchRelease();
+    runManualGlucoseFlow();
   } else if (latestId.length() && inRect(tx, ty, HB_LAST_X, HB_Y, HB_W, HB_H)) {
     waitTouchRelease();
     curReadingId = latestId;
@@ -1370,34 +1375,51 @@ int postGlucoseReading(float value) {
   return code;
 }
 
-void runGlucoseFlow() {
-  runGlucoseTest();
-  if (!lastGlucoseValid) {  // the result screen already explained "no clear response"
-    showHome(false);
-    return;
-  }
+// Saves a reading on the server (retrying on network errors) and opens the QR step.
+// source: "new_test" for a strip measurement, "previous" for a value the user typed in.
+void saveReadingAndContinue(float value, const char* source) {
   showBusy("Saving reading...");
-  int code = postGlucoseReading(lastGlucoseValue);
+  int code = postGlucoseReading(value);
   while (code != 200 && code != 201) {
     bool retryable = !(code == 400 || code == 403);
     showMessage("Could not save reading", errorFromResponse(lastResp, code),
                 retryable ? "Tap to retry" : "Tap to continue");
     if (!retryable) break;
     showBusy("Saving reading...");
-    code = postGlucoseReading(lastGlucoseValue);  // same client_ref: no duplicates
+    code = postGlucoseReading(value);  // same client_ref: no duplicates
   }
   if (code == 200 || code == 201) {
     StaticJsonDocument<384> d;
     if (deserializeJson(d, lastResp) == DeserializationError::Ok && d["id"].is<const char*>()) {
       curReadingId = d["id"].as<String>();
-      curReadingValue = lastGlucoseValue;
-      curSource = "new_test";
+      curReadingValue = value;
+      curSource = source;
       showQRScreen();
       return;
     }
   }
   lastReadingRef = "";
   showHome(true);
+}
+
+void runGlucoseFlow() {
+  runGlucoseTest();
+  if (!lastGlucoseValid) {  // the result screen already explained "no clear response"
+    showHome(false);
+    return;
+  }
+  saveReadingAndContinue(lastGlucoseValue, "new_test");
+}
+
+// The user already knows their glucose: type it on the keypad instead of using the strip.
+void runManualGlucoseFlow() {
+  int v = captureNumber("Enter glucose", "Your glucose value", "mg/dL", 0, 40, 600, true);
+  if (v < 0) {  // logo = back
+    showHome(false);
+    return;
+  }
+  lastReadingRef = "";  // fresh idempotency key so an old reading is never returned
+  saveReadingAndContinue((float)v, "previous");
 }
 
 // ============================================================
