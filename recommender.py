@@ -65,10 +65,26 @@ def _parse_parts(text):
     return out
 
 
+def _read_excel_safe(path, **kwargs):
+    try:
+        return pd.read_excel(path, **kwargs)
+    except PermissionError:
+        import subprocess, tempfile
+        tmp = os.path.join(tempfile.gettempdir(), 'safe_' + os.path.basename(path))
+        try:
+            subprocess.run(['powershell', '-Command', f'Copy-Item "{path}" "{tmp}" -Force'], check=True)
+            return pd.read_excel(tmp, **kwargs)
+        finally:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+
+
 class _Kind:
     def __init__(self, data_file, db_file, kind):
         self.kind = kind
-        df = pd.read_excel(_data_path(data_file))
+        df = _read_excel_safe(_data_path(data_file))
         self.targets = [c for c in df.columns if c.startswith("EC_")]
         self.microbes = [c for c in df.columns if c not in IDS + DROP + CLIN + self.targets]
         if self.microbes != SPECIES:
@@ -84,8 +100,7 @@ class _Kind:
         Y = ((df[self.targets] - mu) / sd).values
         self.model = XGBClassifier(**XGB_PARAMS).fit(X, Y.argmax(axis=1))
 
-
-        db = pd.read_excel(_data_path(db_file), sheet_name=0)
+        db = _read_excel_safe(_data_path(db_file), sheet_name=0)
         if kind == "phyto":
             db["EC No"] = db["EC No"].astype(str).str.strip()
             self.ec_col, self.pic_col = "EC No", "pIC50"

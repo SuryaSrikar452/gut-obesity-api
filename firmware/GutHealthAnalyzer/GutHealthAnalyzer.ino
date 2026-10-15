@@ -163,19 +163,17 @@ enum Screen { SC_HOME, SC_QR, SC_FAILED };
 Screen screen = SC_HOME;
 String qrError = "";
 
-// Model output shown on the dashboard (top 5 each, top 3 microbes)
+// Model output shown on the dashboard (top 5 each, top 3 gut EC targets)
 struct ResItem { char food[64]; char compound[160]; char enzyme[24]; float prob; float pic50; };
-struct MicrobeItem {
-  char name[48];
-  char tag[16];
-  char subtitle[48];
-  float abundance;
-  bool is_risk;
+struct GutItem {
+  char ec[24];
+  char name[80];
+  char microbes[384];
 };
 ResItem resPhyto[5];
 ResItem resFood[5];
-MicrobeItem resMicrobes[3];
-int nPhyto = 0, nFood = 0, nMicrobes = 0;
+GutItem resGut[3];
+int nPhyto = 0, nFood = 0, nGut = 0;
 char lastSampleId[32] = "";
 float lastReportGlucose = 0.0f;
 
@@ -1014,11 +1012,9 @@ int loadItems(JsonArray a, int which) {
     }
   }
   return n;
-}
-
 // silent = true only records the current report id. Returns true when a NEW completed report was loaded.
 bool pollLatest(bool silent) {
-  DynamicJsonDocument doc(4096);
+  DynamicJsonDocument doc(6144);
   int code = getJson("/device/latest-report?device_id=" + API_KEY, doc, 8000);
   if (code != 200) return false;
   if (!(doc["status"] == "ok") || !(doc["report_status"] == "completed")) return false;
@@ -1032,17 +1028,28 @@ bool pollLatest(bool silent) {
   nPhyto = loadItems(doc["phyto"].as<JsonArray>(), 0);
   nFood = loadItems(doc["food"].as<JsonArray>(), 1);
 
-  nMicrobes = 0;
-  JsonArray ma = doc["microbes"].as<JsonArray>();
-  for (JsonObject m : ma) {
-    if (nMicrobes >= 3) break;
-    const char* nm = m["name"] | "?";
-    strlcpy(resMicrobes[nMicrobes].name, nm, sizeof(resMicrobes[nMicrobes].name));
-    strlcpy(resMicrobes[nMicrobes].tag, m["tag"] | "Marker", sizeof(resMicrobes[nMicrobes].tag));
-    strlcpy(resMicrobes[nMicrobes].subtitle, m["subtitle"] | "T2D Gut Biomarker", sizeof(resMicrobes[nMicrobes].subtitle));
-    resMicrobes[nMicrobes].abundance = m["abundance"] | 0.0f;
-    resMicrobes[nMicrobes].is_risk = m["is_risk"] | false;
-    nMicrobes++;
+  nGut = 0;
+  JsonArray ga = doc["gut"].as<JsonArray>();
+  if (!ga.isNull() && ga.size() > 0) {
+    for (JsonObject g : ga) {
+      if (nGut >= 3) break;
+      const char* ecVal = g["ec"] | "";
+      const char* nameVal = g["name"] | "";
+      const char* micVal = g["microbes"] | "";
+      strlcpy(resGut[nGut].ec, ecVal, sizeof(resGut[nGut].ec));
+      strlcpy(resGut[nGut].name, nameVal, sizeof(resGut[nGut].name));
+      strlcpy(resGut[nGut].microbes, micVal, sizeof(resGut[nGut].microbes));
+      nGut++;
+    }
+  } else {
+    JsonArray ma = doc["microbes"].as<JsonArray>();
+    for (JsonObject m : ma) {
+      if (nGut >= 3) break;
+      strlcpy(resGut[nGut].ec, "Biomarker", sizeof(resGut[nGut].ec));
+      strlcpy(resGut[nGut].name, m["name"] | "Microbe", sizeof(resGut[nGut].name));
+      strlcpy(resGut[nGut].microbes, m["subtitle"] | "Gut Microbial Biomarker", sizeof(resGut[nGut].microbes));
+      nGut++;
+    }
   }
   return true;
 }
@@ -1084,7 +1091,7 @@ void drawDashMenu() {
     T(sbuf, bx + tw / 2, 22, F_TINY, COL_WHITE, TRANSP, AL_C);
   }
 
-  drawDashCard(16, 58, 140, 136, 2, "T2D Microbes", "Affecting T2D");
+  drawDashCard(16, 58, 140, 136, 2, "Gut Analyzer", "Top ECs & microbes");
   drawDashCard(170, 58, 140, 136, 1, "Food", "Top foods");
   drawDashCard(324, 58, 140, 136, 0, "Phytochemicals", "Active targets");
   drawPill(20, 208, 215, 44, "Email PDF Report", COL_PRIMARY, COL_WHITE, COL_PRIMARY_DARK);
@@ -1281,86 +1288,6 @@ void showResultList(int which, int expandedIdx = -1) {
   drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
 }
 
-// Dedicated screen for the Top 3 Gut Microbes affecting Type 2 Diabetes
-void showMicrobeList() {
-  drawHeader("T2D Gut Microbes");
-
-  // Show Table Name and Sample ID + Glucose at the top right header
-  T("Table: fbg_input_food.xlsx", 472, 13, F_TINY, COL_ACCENT_SOFT, TRANSP, AL_R);
-  char sbuf[64];
-  formatSampleBadge(sbuf, sizeof(sbuf));
-  if (strlen(sbuf) > 0) {
-    T(sbuf, 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
-  } else {
-    T("Cohort Match", 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
-  }
-
-  if (nMicrobes == 0) {
-    drawCard(20, 54, 440, 200);
-    T("No microbiome data available", 240, 150, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
-  } else {
-    for (int i = 0; i < nMicrobes; i++) {
-      int cx = 18, cy = 52 + i * 70, cw = 444, ch = 64;
-      display.fillRoundRect(cx, cy, cw, ch, 10, COL_WHITE);
-      display.drawRoundRect(cx, cy, cw, ch, 10, COL_BORDER);
-
-      // Rank badge (green rounded box on left)
-      int numX = cx + 6, numY = cy + 6, numW = 28, numH = ch - 12;
-      display.fillRoundRect(numX, numY, numW, numH, 6, COL_ACCENT_SOFT);
-      char nb[4]; snprintf(nb, sizeof(nb), "%d", i + 1);
-      T(nb, numX + numW / 2, numY + numH / 2, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
-
-      // Icon circle (microbe rod emblem, colored by risk vs protective)
-      int iconX = cx + 50, iconY = cy + ch / 2;
-      bool isRisk = resMicrobes[i].is_risk;
-      uint16_t iconBg = isRisk ? COL_WARN_BG : COL_ACCENT_SOFT;
-      uint16_t iconFg = isRisk ? COL_RED : COL_SECONDARY;
-      uint16_t dotFg  = isRisk ? COL_RED : COL_PRIMARY_DARK;
-
-      display.fillCircle(iconX, iconY, 13, iconBg);
-      display.fillRoundRect(iconX - 6, iconY - 3, 12, 6, 3, iconFg);
-      display.fillCircle(iconX - 3, iconY - 5, 2, dotFg);
-      display.fillCircle(iconX + 3, iconY + 5, 2, dotFg);
-
-      // Microbe Name (clean Title Case, e.g. "Clostridium Bolteae")
-      int tx = cx + 72;
-      String name = prettyName(resMicrobes[i].name);
-      display.setFont(F_TITLE);
-      display.setTextSize(1);
-      const lgfx::IFont* tf = (display.textWidth(name.c_str()) > 210) ? F_BODYB : F_TITLE;
-      String tFit = fitText(name.c_str(), 210, tf);
-      T(tFit.c_str(), tx, cy + 20, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
-
-      // Subtitle (T2D role / clinical association)
-      String subStr = fitText(resMicrobes[i].subtitle, 210, F_TINY);
-      T(subStr.c_str(), tx, cy + 44, F_TINY, isRisk ? COL_RED : COL_TEXT_SOFT, COL_WHITE, AL_L);
-
-      // T2D Role Tag box
-      int ecX = cx + 290, ecY = cy + 9, ecW = 72, ecH = 46;
-      display.fillRoundRect(ecX, ecY, ecW, ecH, 8, isRisk ? COL_WARN_BG : COL_ACCENT_SOFT);
-      T("T2D Role", ecX + ecW / 2, ecY + 14, F_TINY, isRisk ? COL_RED : COL_TEXT_SOFT,
-        isRisk ? COL_WARN_BG : COL_ACCENT_SOFT, AL_C);
-      T(resMicrobes[i].tag, ecX + ecW / 2, ecY + 32, F_BODYB, isRisk ? COL_RED : COL_PRIMARY_DARK,
-        isRisk ? COL_WARN_BG : COL_ACCENT_SOFT, AL_C);
-
-      // Abundance percentage pill
-      int pbX = cx + 370, pbY = cy + 12, pbW = 66, pbH = 40;
-      display.fillRoundRect(pbX, pbY, pbW, pbH, 20, COL_PRIMARY_DARK);
-      char pb[16];
-      if (resMicrobes[i].abundance >= 10.0f) {
-        snprintf(pb, sizeof(pb), "%.1f%%", (double)resMicrobes[i].abundance);
-      } else {
-        snprintf(pb, sizeof(pb), "%.2f%%", (double)resMicrobes[i].abundance);
-      }
-      T(pb, pbX + pbW / 2, pbY + pbH / 2, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
-    }
-  }
-
-  // Bottom buttons
-  drawPill(140, 270, 94, 38, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
-  drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
-}
-
 // Returns true if the user chose "Done" (leave results), false for "Back" (to the dashboard menu).
 bool resultListLoop(int which) {
   int expandedIdx = -1;
@@ -1416,14 +1343,186 @@ bool resultListLoop(int which) {
   }
 }
 
-bool microbeListLoop() {
-  showMicrobeList();
+// Dedicated screen for the Top 3 Gut EC Targets and their Respective Microbes
+void showGutList(int expandedIdx = -1) {
+  drawHeader("Gut Analyzer");
+
+  // Show Table Name and Sample ID + Glucose at the top right header
+  T("Table: food_EC_microbe_long.xlsx", 472, 13, F_TINY, COL_ACCENT_SOFT, TRANSP, AL_R);
+  char sbuf[64];
+  formatSampleBadge(sbuf, sizeof(sbuf));
+  if (strlen(sbuf) > 0) {
+    T(sbuf, 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
+  } else {
+    T("Cohort Match", 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
+  }
+
+  if (nGut == 0) {
+    drawCard(20, 54, 440, 200);
+    T("No gut enzyme data available", 240, 150, F_BODY, COL_TEXT_SOFT, COL_WHITE, AL_C);
+    drawPill(140, 270, 94, 38, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+    drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
+    return;
+  }
+
+  // EXPANDED VIEW: When an individual EC card is tapped
+  if (expandedIdx >= 0 && expandedIdx < nGut) {
+    int i = expandedIdx;
+    int cx = 18, cy = 52, cw = 444, ch = 208;
+    display.fillRoundRect(cx + 2, cy + 3, cw, ch, 12, COL_SHADOW);
+    display.fillRoundRect(cx, cy, cw, ch, 12, COL_WHITE);
+    display.drawRoundRect(cx, cy, cw, ch, 12, COL_PRIMARY);
+
+    // Index badge
+    int numX = cx + 10, numY = cy + 10, numW = 32, numH = 38;
+    display.fillRoundRect(numX, numY, numW, numH, 8, COL_ACCENT_SOFT);
+    char nb[4]; snprintf(nb, sizeof(nb), "%d", i + 1);
+    T(nb, numX + numW / 2, numY + numH / 2, F_TITLE, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+
+    // Icon circle (enzyme symbol)
+    int iconX = cx + 58, iconY = cy + 29;
+    display.fillCircle(iconX, iconY, 15, COL_ACCENT_SOFT);
+    display.fillRoundRect(iconX - 7, iconY - 3, 14, 6, 3, COL_PRIMARY_DARK);
+    display.fillCircle(iconX - 3, iconY - 5, 2, COL_SECONDARY);
+    display.fillCircle(iconX + 3, iconY + 5, 2, COL_SECONDARY);
+
+    // Primary Title (Full Enzyme definition / Name)
+    int tx = cx + 80;
+    String name = prettyName(resGut[i].name);
+    display.setFont(F_TITLE);
+    display.setTextSize(1);
+    const lgfx::IFont* tf = (display.textWidth(name.c_str()) > 220) ? F_BODYB : F_TITLE;
+    String tFit = fitText(name.c_str(), 220, tf);
+    T(tFit.c_str(), tx, cy + 28, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
+
+    // EC Box on right
+    int ecX = cx + 316, ecY = cy + 10, ecW = 118, ecH = 40;
+    display.fillRoundRect(ecX, ecY, ecW, ecH, 8, COL_PRIMARY_DARK);
+    T("EC Target", ecX + ecW / 2, ecY + 12, F_TINY, COL_ACCENT, COL_PRIMARY_DARK, AL_C);
+    T(resGut[i].ec, ecX + ecW / 2, ecY + 28, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
+
+    // Divider line
+    display.drawFastHLine(cx + 12, cy + 54, cw - 24, COL_BORDER);
+
+    // Section label
+    T("Respective Gut Microbes:", cx + 16, cy + 68, F_BODYB, COL_PRIMARY_DARK, COL_WHITE, AL_L);
+
+    // Multiline full list of microbes wrapped nicely without "..."
+    const char* fullText = strlen(resGut[i].microbes) > 0 ? resGut[i].microbes : "No associated microbes listed";
+    drawWrappedText(fullText, cx + 16, cy + 82, cw - 32, 20, 5, F_BODY, COL_TEXT, COL_WHITE);
+
+    // Bottom specifications ribbon inside card
+    int sbY = cy + ch - 34;
+    display.fillRoundRect(cx + 10, sbY, cw - 20, 26, 6, COL_ACCENT_SOFT);
+    char specLeft[64];
+    snprintf(specLeft, sizeof(specLeft), "Target Enzyme: EC %s", resGut[i].ec);
+    T(specLeft, cx + 18, sbY + 13, F_TINY, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_L);
+    T("Source: food_EC_microbe_long.xlsx", cx + cw - 18, sbY + 13, F_TINY, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_R);
+
+    // Buttons at bottom
+    drawPill(140, 270, 94, 38, "Collapse", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+    drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
+    return;
+  }
+
+  // COMPACT VIEW: Shows all 3 EC targets
+  int maxDisplay = nGut > 3 ? 3 : nGut;
+  for (int i = 0; i < maxDisplay; i++) {
+    int cx = 18, cy = 52 + i * 70, cw = 444, ch = 64;
+    display.fillRoundRect(cx, cy, cw, ch, 10, COL_WHITE);
+    display.drawRoundRect(cx, cy, cw, ch, 10, COL_BORDER);
+
+    // Index badge (green rounded box on left)
+    int numX = cx + 6, numY = cy + 6, numW = 28, numH = ch - 12;
+    display.fillRoundRect(numX, numY, numW, numH, 6, COL_ACCENT_SOFT);
+    char nb[4]; snprintf(nb, sizeof(nb), "%d", i + 1);
+    T(nb, numX + numW / 2, numY + numH / 2, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+
+    // Icon circle (enzyme symbol)
+    int iconX = cx + 48, iconY = cy + ch / 2;
+    display.fillCircle(iconX, iconY, 13, COL_ACCENT_SOFT);
+    display.fillRoundRect(iconX - 6, iconY - 3, 12, 6, 3, COL_PRIMARY_DARK);
+    display.fillCircle(iconX - 3, iconY - 5, 2, COL_SECONDARY);
+    display.fillCircle(iconX + 3, iconY + 5, 2, COL_SECONDARY);
+
+    // Primary Title (Enzyme Name)
+    int tx = cx + 68;
+    String name = prettyName(resGut[i].name);
+    display.setFont(F_TITLE);
+    display.setTextSize(1);
+    const lgfx::IFont* tf = (display.textWidth(name.c_str()) > 240) ? F_BODYB : F_TITLE;
+    String tFit = fitText(name.c_str(), 240, tf);
+    T(tFit.c_str(), tx, cy + 20, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
+
+    // Subtitle (Microbes preview)
+    String subStr = String("Microbes: ") + resGut[i].microbes;
+    String sFit = fitText(subStr.c_str(), 240, F_TINY);
+    T(sFit.c_str(), tx, cy + 44, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_L);
+
+    // EC Box on right
+    int ecX = cx + 320, ecY = cy + 9, ecW = 114, ecH = 46;
+    display.fillRoundRect(ecX, ecY, ecW, ecH, 8, COL_ACCENT_SOFT);
+    T("EC Target", ecX + ecW / 2, ecY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
+    T(resGut[i].ec, ecX + ecW / 2, ecY + 32, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
+  }
+
+  // Bottom buttons
+  drawPill(140, 270, 94, 38, "Back", COL_WHITE, COL_PRIMARY_DARK, COL_PRIMARY);
+  drawPill(246, 270, 94, 38, "Done", COL_PRIMARY_DARK, COL_WHITE, COL_PRIMARY_DARK);
+}
+
+// Loop for Gut Analyzer with tap-to-expand / collapse functionality
+bool gutListLoop() {
+  int expandedIdx = -1;
+  showGutList(expandedIdx);
   waitTouchRelease();
   while (true) {
     int tx, ty;
     waitTap(tx, ty);
-    if (hitLogo(tx, ty) || inRect(tx, ty, 140, 270, 94, 38)) { waitTouchRelease(); return false; }
-    if (inRect(tx, ty, 246, 270, 94, 38)) { waitTouchRelease(); return true; }
+    if (hitLogo(tx, ty)) {
+      waitTouchRelease();
+      if (expandedIdx != -1) {
+        expandedIdx = -1;
+        showGutList(expandedIdx);
+        continue;
+      }
+      return false;
+    }
+    // Done button (246, 270)
+    if (inRect(tx, ty, 246, 270, 94, 38)) {
+      waitTouchRelease();
+      return true;
+    }
+    // Back / Collapse button (140, 270)
+    if (inRect(tx, ty, 140, 270, 94, 38)) {
+      waitTouchRelease();
+      if (expandedIdx != -1) {
+        expandedIdx = -1;
+        showGutList(expandedIdx);
+        continue;
+      }
+      return false;
+    }
+    // Card tap handling:
+    if (expandedIdx != -1) {
+      // Tap on expanded card collapses it back to all 3 ECs
+      if (inRect(tx, ty, 18, 52, 444, 208)) {
+        waitTouchRelease();
+        expandedIdx = -1;
+        showGutList(expandedIdx);
+        continue;
+      }
+    } else {
+      // Tap on any of the 3 EC cards expands that card and disperses the other 2
+      for (int i = 0; i < 3; i++) {
+        if (inRect(tx, ty, 18, 52 + i * 70, 444, 64)) {
+          waitTouchRelease();
+          expandedIdx = i;
+          showGutList(expandedIdx);
+          break;
+        }
+      }
+    }
   }
 }
 
@@ -1467,7 +1566,7 @@ void runResultsFlow() {
     waitTouchRelease();
     int tx, ty;
     waitTap(tx, ty);
-    if (inRect(tx, ty, 16, 58, 140, 136)) { waitTouchRelease(); leave = microbeListLoop(); }
+    if (inRect(tx, ty, 16, 58, 140, 136)) { waitTouchRelease(); leave = gutListLoop(); }
     else if (inRect(tx, ty, 170, 58, 140, 136)) { waitTouchRelease(); leave = resultListLoop(1); }
     else if (inRect(tx, ty, 324, 58, 140, 136)) { waitTouchRelease(); leave = resultListLoop(0); }
     else if (inRect(tx, ty, 20, 208, 215, 44)) { waitTouchRelease(); emailReport(); }

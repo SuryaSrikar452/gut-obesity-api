@@ -613,6 +613,43 @@ T2D_SPECIES_PROFILE = {
     },
 }
 
+def _load_ec_microbe_map():
+    mapping = {}
+    import pandas as pd
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for fname in ["food_EC_microbe_long.xlsx", "phyto_EC_microbe_long.xlsx"]:
+        path = os.path.join(base_dir, fname) if not os.path.exists(fname) else fname
+        if not os.path.exists(path):
+            continue
+        try:
+            try:
+                df = pd.read_excel(path)
+            except PermissionError:
+                import subprocess, tempfile
+                tmp = os.path.join(tempfile.gettempdir(), 'safe_' + os.path.basename(path))
+                subprocess.run(['powershell', '-Command', f'Copy-Item "{path}" "{tmp}" -Force'], check=True)
+                df = pd.read_excel(tmp)
+                try: os.remove(tmp)
+                except Exception: pass
+            for _, row in df.iterrows():
+                ec_raw = str(row.get("EC No", "")).strip().replace("EC ", "")
+                if not ec_raw or ec_raw == "nan":
+                    continue
+                name = str(row.get("Enzyme Name", "")).strip()
+                microbe = str(row.get("Microbe", "")).strip()
+                if ec_raw not in mapping:
+                    mapping[ec_raw] = {"name": name if name and name != "nan" else f"Enzyme {ec_raw}", "microbes": []}
+                if name and name != "nan" and mapping[ec_raw]["name"].startswith("Enzyme "):
+                    mapping[ec_raw]["name"] = name
+                if microbe and microbe != "nan" and microbe not in mapping[ec_raw]["microbes"]:
+                    mapping[ec_raw]["microbes"].append(microbe)
+        except Exception as e:
+            print(f"Error loading {fname}: {e}")
+    return mapping
+
+EC_MICROBE_MAP = _load_ec_microbe_map()
+
+
 @app.get("/device/latest-report")
 def device_latest_report(device_id: str):
     """Small summary for the ESP32 screen. Contains no CSV data and no clinical profile."""
@@ -686,6 +723,29 @@ def device_latest_report(device_id: str):
     cohort_fbg = res.get("matched_cohort_fbg") if isinstance(res, dict) else None
     display_fbg = cohort_fbg if cohort_fbg is not None else row.get("glucose_value")
 
+    # Extract Top 3 EC targets for this sample from food and phyto predictions
+    candidate_ecs = []
+    for item in (res.get("food") or []) + (res.get("phyto") or []):
+        ec_val = str(item.get("enzyme") or "").replace("EC ", "").strip()
+        if ec_val and ec_val not in candidate_ecs:
+            candidate_ecs.append(ec_val)
+
+    # Backfill up to 3 from the EC mapping if fewer than 3 predicted
+    for ec_key in EC_MICROBE_MAP.keys():
+        if len(candidate_ecs) >= 3:
+            break
+        if ec_key not in candidate_ecs:
+            candidate_ecs.append(ec_key)
+
+    top_gut_ecs = []
+    for ec in candidate_ecs[:3]:
+        info = EC_MICROBE_MAP.get(ec, {"name": f"Enzyme {ec}", "microbes": []})
+        top_gut_ecs.append({
+            "ec": ec,
+            "name": info["name"],
+            "microbes": ", ".join(info["microbes"]),
+        })
+
     return {
         "status": "ok",
         "report_status": row["status"],
@@ -694,6 +754,7 @@ def device_latest_report(device_id: str):
         "glucose": row["glucose_value"],
         "cohort_glucose": display_fbg,
         "sample_id": row.get("sample_id") or "Cohort Match",
+        "gut": top_gut_ecs,
         "microbes": top_microbes,
         "phyto": [
             {
@@ -722,7 +783,7 @@ def device_latest_report(device_id: str):
             )[:5]
         ],
         "tables": {
-            "microbes": "fbg_input_food.xlsx",
+            "microbes": "food_EC_microbe_long.xlsx",
             "food": "IC50_Matches_food.xlsx",
             "phyto": "EC_Phytochemical_pIC50_12_rows_t2d.xlsx",
         },
