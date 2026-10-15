@@ -177,6 +177,23 @@ ResItem resFood[5];
 MicrobeItem resMicrobes[3];
 int nPhyto = 0, nFood = 0, nMicrobes = 0;
 char lastSampleId[32] = "";
+float lastReportGlucose = 0.0f;
+
+void formatSampleBadge(char* out, size_t maxLen) {
+  if (strlen(lastSampleId) == 0) {
+    out[0] = '\0';
+    return;
+  }
+  if (lastReportGlucose > 1.0f) {
+    if (lastReportGlucose == (int)lastReportGlucose) {
+      snprintf(out, maxLen, "Sample: %s | %.0f mg/dL", lastSampleId, (double)lastReportGlucose);
+    } else {
+      snprintf(out, maxLen, "Sample: %s | %.1f mg/dL", lastSampleId, (double)lastReportGlucose);
+    }
+  } else {
+    snprintf(out, maxLen, "Sample: %s", lastSampleId);
+  }
+}
 
 
 // ============================================================
@@ -738,6 +755,7 @@ void showHome(bool refresh) {
   if (refresh) {
     fetchLatestGlucose();
     lastSampleId[0] = '\0';
+    lastReportGlucose = 0.0f;
   }
   screen = SC_HOME;
   drawHeader("Glucose Test");
@@ -965,6 +983,7 @@ bool pollLatest(bool silent) {
   if (silent) return false;
   const char* sid = doc["sample_id"] | "";
   strlcpy(lastSampleId, sid, sizeof(lastSampleId));
+  lastReportGlucose = doc["cohort_glucose"] | (doc["glucose"] | 0.0f);
   nPhyto = loadItems(doc["phyto"].as<JsonArray>(), 0);
   nFood = loadItems(doc["food"].as<JsonArray>(), 1);
 
@@ -1007,10 +1026,10 @@ void drawDashCard(int x, int y, int w, int h, int kind, const char* label, const
 void drawDashMenu() {
   drawHeader("Analysis Ready");
 
-  // Show matched dataset Sample ID at the top right header
-  if (strlen(lastSampleId) > 0) {
-    char sbuf[48];
-    snprintf(sbuf, sizeof(sbuf), "Sample: %s", lastSampleId);
+  // Show matched dataset Sample ID and Glucose value at the top right header
+  char sbuf[64];
+  formatSampleBadge(sbuf, sizeof(sbuf));
+  if (strlen(sbuf) > 0) {
     display.setFont(F_TINY);
     display.setTextSize(1);
     int tw = display.textWidth(sbuf) + 16;
@@ -1051,11 +1070,12 @@ void showResultList(int which) {
   int n = which ? nFood : nPhyto;
   drawHeader(which ? "Food Recommendations" : "Phytochemicals");
 
-  // Show Table Name and Sample ID at the top right header
+  // Show Table Name and Sample ID + Glucose at the top right header
   const char* tblName = which ? "Table: IC50_Matches_food.xlsx" : "Table: EC_Phyto_pIC50_12_rows.xlsx";
   T(tblName, 472, 13, F_TINY, COL_ACCENT_SOFT, TRANSP, AL_R);
-  if (strlen(lastSampleId) > 0) {
-    char sbuf[48]; snprintf(sbuf, sizeof(sbuf), "Sample: %s", lastSampleId);
+  char sbuf[64];
+  formatSampleBadge(sbuf, sizeof(sbuf));
+  if (strlen(sbuf) > 0) {
     T(sbuf, 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
   } else {
     T("Cohort Match", 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
@@ -1129,10 +1149,11 @@ void showResultList(int which) {
 void showMicrobeList() {
   drawHeader("T2D Gut Microbes");
 
-  // Show Table Name and Sample ID at the top right header
+  // Show Table Name and Sample ID + Glucose at the top right header
   T("Table: fbg_input_food.xlsx", 472, 13, F_TINY, COL_ACCENT_SOFT, TRANSP, AL_R);
-  if (strlen(lastSampleId) > 0) {
-    char sbuf[48]; snprintf(sbuf, sizeof(sbuf), "Sample: %s", lastSampleId);
+  char sbuf[64];
+  formatSampleBadge(sbuf, sizeof(sbuf));
+  if (strlen(sbuf) > 0) {
     T(sbuf, 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);
   } else {
     T("Cohort Match", 472, 29, F_TINY, COL_WHITE, TRANSP, AL_R);

@@ -403,7 +403,9 @@ def _run_cohort_analysis(user, reading, source, age, height_cm, weight_kg, idem_
         "results": {
             "phyto": results["phyto"], "food": results["food"],
             "bmi": results["bmi"], "bmi_category": results["bmi_category"],
-            "fbg_category": results["fbg_category"]
+            "fbg_category": results["fbg_category"],
+            "matched_cohort_sample": matched_sample,
+            "matched_cohort_fbg": results.get("matched_cohort_fbg")
         }
     }).execute()
     return rid, matched_sample
@@ -681,12 +683,16 @@ def device_latest_report(device_id: str):
         return ""
 
 
+    cohort_fbg = res.get("matched_cohort_fbg") if isinstance(res, dict) else None
+    display_fbg = cohort_fbg if cohort_fbg is not None else row.get("glucose_value")
+
     return {
         "status": "ok",
         "report_status": row["status"],
         "report_id": row["id"],
         "created_at": row["created_at"],
         "glucose": row["glucose_value"],
+        "cohort_glucose": display_fbg,
         "sample_id": row.get("sample_id") or "Cohort Match",
         "microbes": top_microbes,
         "phyto": [
