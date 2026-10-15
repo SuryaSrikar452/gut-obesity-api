@@ -614,10 +614,10 @@ T2D_SPECIES_PROFILE = {
 @app.get("/device/latest-report")
 def device_latest_report(device_id: str):
     """Small summary for the ESP32 screen. Contains no CSV data and no clinical profile."""
-    r = (sb.table("analysis_reports").select("id,status,created_at,glucose_value,results,features")
+    r = (sb.table("analysis_reports").select("id,status,created_at,glucose_value,results,features,sample_id")
          .eq("device_id", device_id).order("created_at", desc=True).limit(1).execute())
     if not r.data:
-        return {"status": "empty"}
+        return {"status": "ok", "report_status": "none"}
     row = r.data[0]
     res = row.get("results") or {}
 
@@ -687,6 +687,7 @@ def device_latest_report(device_id: str):
         "report_id": row["id"],
         "created_at": row["created_at"],
         "glucose": row["glucose_value"],
+        "sample_id": row.get("sample_id") or "Cohort Match",
         "microbes": top_microbes,
         "phyto": [
             {

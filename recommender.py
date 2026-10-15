@@ -158,16 +158,13 @@ def recommend_from_microbiome(age, height_cm, weight_kg, fbg, abundances):
 
 def recommend_from_nearest_cohort(age, height_cm, weight_kg, fbg):
     """
-    If the user has no microbiome CSV, find the closest reference patient in the cohort
-    by standardized Euclidean distance over [Age, BMI, FBG_mgdL] (matching nearest glucose
-    and clinical variables), and use their 20 species microbial abundances to run the models.
+    Select reference cohort sample ONLY based on the closest Fasting Blood Glucose (FBG_mgdL) value.
+    The matched sample's 20 gut microbial species abundances are then used to predict food,
+    phytochemicals, and T2D microbial markers.
     """
-    bmi = weight_kg / ((height_cm / 100.0) ** 2)
-    query = [age, bmi, fbg]
-    zq = (np.asarray(query, float) - _FOOD.c_mu) / _FOOD.c_sd
-    zr = (_FOOD.clin - _FOOD.c_mu) / _FOOD.c_sd
-    d = np.sqrt(((zr - zq) ** 2).sum(axis=1))
-    best_idx = int(np.argmin(d))
+    cohort_fbg = _FOOD.df["FBG_mgdL"].values.astype(float)
+    glucose_diff = np.abs(cohort_fbg - float(fbg))
+    best_idx = int(np.argmin(glucose_diff))
     matched_row = _FOOD.df.iloc[best_idx]
     matched_sample = str(matched_row.get("Sample_ID", f"Cohort #{best_idx + 1}"))
     matched_fbg = float(matched_row.get("FBG_mgdL", fbg))
@@ -176,7 +173,7 @@ def recommend_from_nearest_cohort(age, height_cm, weight_kg, fbg):
     res = recommend_from_microbiome(age, height_cm, weight_kg, fbg, matched_mic)
     res["matched_cohort_sample"] = matched_sample
     res["matched_cohort_fbg"] = matched_fbg
-    res["matched_cohort_distance"] = round(float(d[best_idx]), 3)
+    res["matched_cohort_distance"] = round(float(glucose_diff[best_idx]), 2)
     res["abundances"] = matched_mic
     return res
 

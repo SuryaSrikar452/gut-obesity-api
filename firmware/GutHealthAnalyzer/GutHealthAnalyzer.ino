@@ -176,6 +176,7 @@ ResItem resPhyto[5];
 ResItem resFood[5];
 MicrobeItem resMicrobes[3];
 int nPhyto = 0, nFood = 0, nMicrobes = 0;
+char lastSampleId[32] = "";
 
 
 // ============================================================
@@ -734,7 +735,10 @@ void fetchLatestGlucose() {
 }
 
 void showHome(bool refresh) {
-  if (refresh) fetchLatestGlucose();
+  if (refresh) {
+    fetchLatestGlucose();
+    lastSampleId[0] = '\0';
+  }
   screen = SC_HOME;
   drawHeader("Glucose Test");
   drawCard(20, 58, 440, 144);
@@ -946,6 +950,8 @@ bool pollLatest(bool silent) {
   if (rid == lastReportId) return false;
   lastReportId = rid;
   if (silent) return false;
+  const char* sid = doc["sample_id"] | "";
+  strlcpy(lastSampleId, sid, sizeof(lastSampleId));
   nPhyto = loadItems(doc["phyto"].as<JsonArray>(), 0);
   nFood = loadItems(doc["food"].as<JsonArray>(), 1);
 
@@ -987,6 +993,20 @@ void drawDashCard(int x, int y, int w, int h, int kind, const char* label, const
 
 void drawDashMenu() {
   drawHeader("Analysis Ready");
+
+  // Show matched dataset Sample ID at the top right header
+  if (strlen(lastSampleId) > 0) {
+    char sbuf[48];
+    snprintf(sbuf, sizeof(sbuf), "Sample: %s", lastSampleId);
+    display.setFont(F_TINY);
+    display.setTextSize(1);
+    int tw = display.textWidth(sbuf) + 16;
+    int bx = 472 - tw;
+    display.fillRoundRect(bx, 10, tw, 24, 12, COL_PRIMARY_DARK);
+    display.drawRoundRect(bx, 10, tw, 24, 12, COL_ACCENT);
+    T(sbuf, bx + tw / 2, 22, F_TINY, COL_WHITE, TRANSP, AL_C);
+  }
+
   drawDashCard(16, 58, 140, 136, 2, "T2D Microbes", "Affecting T2D");
   drawDashCard(170, 58, 140, 136, 1, "Food", "Top foods");
   drawDashCard(324, 58, 140, 136, 0, "Phytochemicals", "Active targets");
@@ -1017,7 +1037,12 @@ void showResultList(int which) {
   ResItem* items = which ? resFood : resPhyto;
   int n = which ? nFood : nPhyto;
   drawHeader(which ? "Food Recommendations" : "Phytochemicals");
-  T("Research use only", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+  if (strlen(lastSampleId) > 0) {
+    char sbuf[48]; snprintf(sbuf, sizeof(sbuf), "Sample: %s", lastSampleId);
+    T(sbuf, 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+  } else {
+    T("Research use only", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+  }
 
   if (n == 0) {
     drawCard(20, 54, 440, 200);
@@ -1083,7 +1108,12 @@ void showResultList(int which) {
 // Dedicated screen for the Top 3 Gut Microbes affecting Type 2 Diabetes
 void showMicrobeList() {
   drawHeader("T2D Gut Microbes");
-  T("Type 2 Diabetes Markers", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+  if (strlen(lastSampleId) > 0) {
+    char sbuf[48]; snprintf(sbuf, sizeof(sbuf), "Sample: %s", lastSampleId);
+    T(sbuf, 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+  } else {
+    T("Type 2 Diabetes Markers", 470, 22, F_TINY, COL_WHITE, TRANSP, AL_R);
+  }
 
   if (nMicrobes == 0) {
     drawCard(20, 54, 440, 200);
