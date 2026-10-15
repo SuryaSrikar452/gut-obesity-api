@@ -1088,8 +1088,8 @@ void showResultList(int which) {
       String titleNm = prettyName(items[i].food);
       display.setFont(F_TITLE);
       display.setTextSize(1);
-      const lgfx::IFont* tf = (display.textWidth(titleNm.c_str()) > 165) ? F_BODYB : F_TITLE;
-      String tFit = fitText(titleNm.c_str(), 165, tf);
+      const lgfx::IFont* tf = (display.textWidth(titleNm.c_str()) > 210) ? F_BODYB : F_TITLE;
+      String tFit = fitText(titleNm.c_str(), 210, tf);
       T(tFit.c_str(), tx, cy + 20, tf, COL_PRIMARY_DARK, COL_WHITE, AL_L);
 
       // Subtitle (Compound: <name>)
@@ -1098,32 +1098,25 @@ void showResultList(int which) {
         subStr = String("Compound: ") + items[i].compound;
       } else {
         subStr = strlen(items[i].compound) > 0 ? (String("Plant: ") + items[i].compound)
-                                               : (String("Target: ") + items[i].enzyme);
+                                               : (String("EC: ") + items[i].enzyme);
       }
-      String sFit = fitText(subStr.c_str(), 165, F_TINY);
+      String sFit = fitText(subStr.c_str(), 210, F_TINY);
       T(sFit.c_str(), tx, cy + 44, F_TINY, COL_TEXT_SOFT, COL_WHITE, AL_L);
 
-      // Box 1: Target EC box
-      int ecX = cx + 240, ecY = cy + 9, ecW = 60, ecH = 46;
+      // Box 1: EC box (displays "EC" instead of "Target")
+      int ecX = cx + 288, ecY = cy + 9, ecW = 72, ecH = 46;
       display.fillRoundRect(ecX, ecY, ecW, ecH, 8, COL_ACCENT_SOFT);
-      T("Target", ecX + ecW / 2, ecY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
+      T("EC", ecX + ecW / 2, ecY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
       T(items[i].enzyme, ecX + ecW / 2, ecY + 32, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
 
-      // Box 2: pIC50 box
-      int picX = cx + 306, picY = cy + 9, picW = 66, picH = 46;
-      display.fillRoundRect(picX, picY, picW, picH, 8, COL_ACCENT_SOFT);
-      T("pIC50", picX + picW / 2, picY + 14, F_TINY, COL_TEXT_SOFT, COL_ACCENT_SOFT, AL_C);
+      // Box 2: pIC50 box (prominently showing pIC50 value)
+      int picX = cx + 366, picY = cy + 9, picW = 72, picH = 46;
+      display.fillRoundRect(picX, picY, picW, picH, 8, COL_PRIMARY_DARK);
+      T("pIC50", picX + picW / 2, picY + 14, F_TINY, COL_ACCENT, COL_PRIMARY_DARK, AL_C);
       char pib[12];
       if (items[i].pic50 > 0.01f) snprintf(pib, sizeof(pib), "%.2f", (double)items[i].pic50);
       else strcpy(pib, "--");
-      T(pib, picX + picW / 2, picY + 32, F_BODYB, COL_PRIMARY_DARK, COL_ACCENT_SOFT, AL_C);
-
-      // Box 3: Probability pill (dark green pill with white percentage)
-      int pbX = cx + 378, pbY = cy + 9, pbW = 58, pbH = 46;
-      display.fillRoundRect(pbX, pbY, pbW, pbH, 8, COL_PRIMARY_DARK);
-      T("Match", pbX + pbW / 2, pbY + 14, F_TINY, COL_ACCENT, COL_PRIMARY_DARK, AL_C);
-      char pb[16]; snprintf(pb, sizeof(pb), "%.0f%%", (double)items[i].prob);
-      T(pb, pbX + pbW / 2, pbY + 32, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
+      T(pib, picX + picW / 2, picY + 32, F_BODYB, COL_WHITE, COL_PRIMARY_DARK, AL_C);
     }
   }
 
